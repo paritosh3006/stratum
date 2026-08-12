@@ -1,0 +1,15 @@
+[project]
+name = "stratum-reference-system"
+version = "0.1.0"
+description = "Hybrid RAG reference system — the thing Stratum measures"
+requires-python = ">=3.10"
+dependencies = ["stratum-eval"]
+
+[project.optional-dependencies]
+pdf = ["pymupdf>=1.24"]
+models = ["sentence-transformers>=3.0"]
+all = ["pymupdf>=1.24", "sentence-transformers>=3.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

@@ -1,0 +1,130 @@
+"""The reference system, wired end to end and exposed to Stratum.
+
+The oracle hooks are the part that matters for attribution. Each one skips a
+stage using known-good input:
+
+    context_chunk_ids  -> retrieval is skipped, these chunks are used
+    answer_override    -> answering is skipped, this text goes to rendering
+
+Declaring a capability the system does not honour is the one failure Stratum
+cannot detect: the rung would read zero and the loss would be absorbed
+silently by a neighbour. So the hooks are wired first and the capability flags
+are set last.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from stratum import CallableEndpoint, RagResponse
+from stratum.endpoint import Capabilities
+
+from .extractive import Span, select_span
+from ..ingest.chunk import Chunk, build_corpus
+from ..retrieval.embedder import get_embedder
+from ..retrieval.hybrid import Hit, HybridRetriever
+
+
+@dataclass
+class SystemConfig:
+    corpus_dir: Path
+    embedder: str = "hashing"
+    use_dense: bool = True
+    use_sparse: bool = True
+    dense_weight: float = 1.0
+    sparse_weight: float = 1.0
+    top_k: int = 5
+    min_span_score: float = 0.12
+    #: Smaller than a typical 512 because retrieval granularity is what is
+    #: being measured: oversized chunks inflate recall by making every chunk
+    #: contain a bit of everything.
+    target_tokens: int = 180
+
+
+class ReferenceSystem:
+    def __init__(self, config: SystemConfig) -> None:
+        self.config = config
+        self.chunks: list[Chunk] = build_corpus(
+            config.corpus_dir, target_tokens=config.target_tokens
+        )
+        if not self.chunks:
+            raise RuntimeError(f"no documents ingested from {config.corpus_dir}")
+
+        self.by_id: dict[str, Chunk] = {c.chunk_id: c for c in self.chunks}
+        self.retriever = HybridRetriever(
+            get_embedder(config.embedder),
+            use_dense=config.use_dense,
+            use_sparse=config.use_sparse,
+            dense_weight=config.dense_weight,
+            sparse_weight=config.sparse_weight,
+        )
+        self.retriever.add(self.chunks)
+
+    # ------------------------------------------------------------------
+    def answer(
+        self,
+        query: str,
+        language: str,
+        *,
+        context_chunk_ids: list[str] | None = None,
+        answer_override: str | None = None,
+    ) -> RagResponse:
+        # -- S2: retrieval, or the oracle bypass --------------------------
+        if context_chunk_ids is not None:
+            hits = [
+                Hit(cid, 1.0, self.by_id[cid].text, "oracle")
+                for cid in context_chunk_ids
+                if cid in self.by_id
+            ]
+        else:
+            hits = self.retriever.search(query, k=self.config.top_k)
+
+        retrieved = [h.chunk_id for h in hits]
+
+        # -- S3: answering, or the oracle bypass --------------------------
+        if answer_override is not None:
+            answer, refused = answer_override, False
+        else:
+            span: Span | None = select_span(
+                query,
+                hits,
+                min_score=self.config.min_span_score,
+                idf=self.retriever.sparse._idf if self.retriever.sparse else None,
+            )
+            if span is None:
+                return RagResponse(
+                    answer="",
+                    retrieved_chunk_ids=retrieved,
+                    detected_language=language,
+                    refused=True,
+                    raw={"reason": "no span above relevance floor"},
+                )
+            answer, refused = span.text, False
+
+        # -- S4: rendering slots in here (week 3) -------------------------
+        return RagResponse(
+            answer=answer,
+            retrieved_chunk_ids=retrieved,
+            detected_language=language,
+            refused=refused,
+            raw={"n_hits": len(hits)},
+        )
+
+
+def build_endpoint(config: SystemConfig) -> CallableEndpoint:
+    system = ReferenceSystem(config)
+    return CallableEndpoint(
+        system.answer,
+        capabilities=Capabilities(
+            accepts_query_override=True,      # the harness swaps the query text
+            accepts_context_override=True,    # honoured above
+            accepts_answer_override=True,     # honoured above
+        ),
+    )
+
+
+#: Default endpoint for `stratum run --endpoint .../system.py:endpoint`
+endpoint = build_endpoint(
+    SystemConfig(corpus_dir=Path(__file__).resolve().parents[1] / "corpus")
+)

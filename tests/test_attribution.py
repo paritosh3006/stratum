@@ -62,3 +62,16 @@ class TestCascade:
     def test_render_mentions_baseline_and_final(self):
         out = render_cascade(build_cascade("hi", "en", **_ladder(0.5, 0.6, 0.7, 0.8, 0.9)))
         assert "baseline" in out and "final" in out
+
+
+class TestSignConvention:
+    def test_header_shows_loss_as_negative(self):
+        # A language scoring below baseline must not read as an improvement.
+        c = build_cascade("hi", "en", **_ladder(0.5, 0.6, 0.7, 0.8, 0.9))
+        header = render_cascade(c).splitlines()[0]
+        assert "-40.0 points" in header or "−40.0 points" in header
+
+    def test_language_above_baseline_shows_positive(self):
+        c = build_cascade("hi", "en", **_ladder(0.9, 0.9, 0.9, 0.9, 0.7))
+        header = render_cascade(c).splitlines()[0]
+        assert "+20.0 points" in header

@@ -262,7 +262,8 @@ def render_cascade(cascade: Cascade, width: int = 28) -> str:
         return f"  {cascade.language} · cascade unavailable (missing baseline)"
 
     lines.append(
-        # f"  {cascade.language} · {total:+.1f} points vs {cascade.baseline_language}"
+        # total_loss is a *loss*: positive means worse than baseline. Printing it
+        # with a leading '+' read as an improvement, which inverted the finding.
         f"  {cascade.language} · {-total:+.1f} points vs {cascade.baseline_language}"
     )
     lines.append("")
