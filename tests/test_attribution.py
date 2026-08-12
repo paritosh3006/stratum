@@ -63,6 +63,26 @@ class TestCascade:
         out = render_cascade(build_cascade("hi", "en", **_ladder(0.5, 0.6, 0.7, 0.8, 0.9)))
         assert "baseline" in out and "final" in out
 
+    def test_dominant_share_is_of_measured_loss_when_stages_unmeasurable(self):
+        # total_loss (baseline - standard) is 40, but s2/s3 are unmeasurable,
+        # so the visible rungs (s0_s1=10, s4=40) do not sum to it. Sharing
+        # the dominant stage against the raw total prints "100% of loss" for
+        # a stage that, by construction, cannot account for the whole gap —
+        # some of it may be hiding in the blank rungs.
+        c = build_cascade(
+            "hi", "en",
+            **_ladder(0.5, 0.6, 0.7, 0.5, 0.9),
+            unmeasurable_stages=("s2_retrieval", "s3_generation"),
+        )
+        assert c.total_loss == pytest.approx(40.0, abs=0.1)
+        assert c.dominant.stage == "s4_rendering"
+
+        out = render_cascade(c)
+        assert "100% of loss" not in out
+        # 40 / (10 + 40) measured-positive points = 80%, not the 100% a
+        # denominator of the raw total would have printed.
+        assert "80% of measured loss" in out
+
 
 class TestSignConvention:
     def test_header_shows_loss_as_negative(self):

@@ -27,6 +27,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT.parent))
 
 from reference_system.ingest.chunk import build_corpus  # noqa: E402
+from reference_system.pipeline.extractive import select_span  # noqa: E402
+from reference_system.retrieval.hybrid import Hit  # noqa: E402
 
 CORPUS = ROOT / "corpus"
 
@@ -164,8 +166,28 @@ def resolve(locator: str, chunks) -> str:
     return matches[0]
 
 
+def gold_answer_for(query_en: str, chunk) -> str:
+    """Extract the gold answer span from the resolved gold chunk.
+
+    Not the question restated: `oracle_answer` feeds this straight to
+    rendering as `answer_override`, so if it were the English query text
+    (as it used to be), that pass would score the system on how well it
+    echoes a question back rather than on rendering an actual answer — and
+    every language would land on the same rendering-loss number regardless
+    of what rendering actually does, which is exactly what happened before
+    this fix (both hi-Deva and hi-Latn read an identical -17.5).
+
+    Reuses the same overlap-scoring the system's own answerer uses
+    (`min_score=0.0` because the chunk is already known-good — the relevance
+    floor exists to reject wrong chunks, not to second-guess a gold one).
+    """
+    span = select_span(query_en, [Hit(chunk.chunk_id, 1.0, chunk.text)], min_score=0.0)
+    return span.text if span else query_en
+
+
 def main() -> None:
     chunks = build_corpus(CORPUS, target_tokens=180)
+    by_id = {c.chunk_id: c for c in chunks}
     print(f"corpus: {len(chunks)} chunks")
 
     items: list[dict] = []
@@ -173,12 +195,13 @@ def main() -> None:
 
     for pid, slice_, locator, queries, extras in SPEC:
         gold = resolve(locator, chunks)
+        gold_answer = gold_answer_for(queries["en"], by_id[gold])
         for lang in LANGS:
             n += 1
             items.append({
                 "id": f"ins-{n:04d}", "language": lang, "slice": slice_,
                 "parallel_id": pid, "query": queries[lang],
-                "gold_answer": queries["en"], "gold_chunk_ids": [gold],
+                "gold_answer": gold_answer, "gold_chunk_ids": [gold],
                 "answerable": True,
                 "numerals": extras.get("numerals", []),
                 "entities": extras.get("entities", []),

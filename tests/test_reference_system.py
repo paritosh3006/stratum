@@ -124,17 +124,35 @@ class TestTransliteration:
         t = RuleBasedTransliterator()
         assert t.transliterate("kaise kare") == t.transliterate("kaise kare")
 
+    def test_digits_survive_untouched(self):
+        # The syllable table maps only Latin letters, so numerals must never
+        # be rewritten — regression guard for the numeral_integrity gap
+        # investigated in examples/reference_system/README.md, which turned
+        # out not to be digit corruption but is worth locking in either way.
+        assert RuleBasedTransliterator().transliterate("45 saal 500000") == "45 साल 500000"
+
 
 class TestTranslation:
     def test_known_words_translate(self):
-        out = LexiconTranslator().translate("घुटना बदलने की सर्जरी शामिल है क्या")
+        with pytest.warns(UserWarning, match="train-on-test"):
+            translator = LexiconTranslator()
+        out = translator.translate("घुटना बदलने की सर्जरी शामिल है क्या")
         assert "knee" in out and "surgery" in out
 
     def test_unknown_tokens_pass_through(self):
         # No entry for a made-up token: it must survive unchanged rather
         # than being dropped or raising.
-        out = LexiconTranslator().translate("क्या xyz123 है")
+        with pytest.warns(UserWarning, match="train-on-test"):
+            translator = LexiconTranslator()
+        out = translator.translate("क्या xyz123 है")
         assert "xyz123" in out
+
+    def test_warns_that_its_lexicon_is_train_on_test(self):
+        # The dictionary's vocabulary was read from this eval dataset's own
+        # queries (see build_dataset.py). Anyone who runs stratum with this
+        # backend active should not learn that from the README alone.
+        with pytest.warns(UserWarning, match="train-on-test"):
+            LexiconTranslator()
 
 
 class TestQueryPipeline:
@@ -178,6 +196,16 @@ class TestQueryPipeline:
     def test_detected_language_reflects_actual_script(self, system):
         r = system.answer("पॉलिसी में कमरे का किराया कितना देय है?", "hi-Deva")
         assert r.detected_language == HI_DEVA
+
+    def test_numerals_survive_hi_latn_normalization(self):
+        # ASCII digits must reach the retriever unchanged. numeral_integrity
+        # failures for hi-Latn turned out to trace to over-refusal, not to
+        # this — see README.md's numeral integrity note — but the pipeline
+        # should still guarantee it.
+        pipeline = build_query_pipeline()
+        result = pipeline.normalize("45 saal aur 500000 sum insured pe premium kitna hai")
+        assert "45" in result.normalized.split()
+        assert "500000" in result.normalized.split()
 
 
 class TestOracleHooks:

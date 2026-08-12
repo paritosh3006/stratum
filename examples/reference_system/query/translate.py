@@ -7,6 +7,7 @@ transliteration — so this stage only ever receives Devanagari text.
 from __future__ import annotations
 
 import re
+import warnings
 from typing import Protocol
 
 
@@ -16,13 +17,21 @@ class Translator(Protocol):
     def translate(self, text: str, source_lang: str = "hi") -> str: ...
 
 
-#: A small hand-built lexicon, not mined from the eval set — keyed by word,
-#: not by query, the same as any phrasebook dictionary. It covers the
-#: function words and insurance-domain nouns that recur across Hindi
-#: queries generally; it is not tuned to any specific question. Anything
-#: absent from the table passes through unchanged, which is the right
-#: default for an English loanword already in the text and simply wrong for
-#: everything else.
+#: Built by scanning the Devanagari vocabulary that actually appears across
+#: eval/build_dataset.py's SPEC and UNANSWERABLE entries, then glossing each
+#: word by hand. That makes it train-on-test at the vocabulary level: hi-Deva
+#: quality numbers produced with LexiconTranslator as the active backend are
+#: optimistic relative to what a lexicon built independently of this eval
+#: set would score, because "does this word happen to be in the dictionary"
+#: is not independent of "was this word used to build the dictionary."
+#:
+#: It is *not* mined at the query or answer level — no full question or its
+#: translation is stored anywhere here, only isolated words — so it cannot
+#: answer a query it has never seen a resembling one to. That distinction
+#: matters (it is a real, if narrow, translator rather than a lookup table
+#: keyed by item id) but does not make the coverage claim above go away.
+#: `LexiconTranslator` warns on construction for this reason; see
+#: examples/reference_system/README.md.
 _LEXICON: dict[str, str] = {
     "अधिक": "more", "अवधि": "period", "अस्पताल": "hospital", "आयु": "age",
     "आवेदन": "apply", "इलाज": "treatment", "इस": "this", "उप": "sub",
@@ -60,15 +69,28 @@ _TOKEN = re.compile(r"[ऀ-ॿ]+|[^\sऀ-ॿ]+")
 
 
 class LexiconTranslator:
-    """Word-for-word gloss against a small hand-built lexicon. No model.
+    """Word-for-word gloss against a lexicon built from this eval set's own
+    vocabulary. No model — and, despite appearances, not a general-purpose
+    dictionary either; see the train-on-test note on `_LEXICON` above.
 
     Reorders nothing and disambiguates nothing — a gloss, not a machine
     translation. It exists so the pipeline runs offline; how well it serves
     retrieval downstream depends entirely on how many content words the
-    lexicon happens to cover.
+    lexicon happens to cover, and that coverage was shaped by this dataset.
     """
 
     name = "lexicon"
+
+    def __init__(self) -> None:
+        warnings.warn(
+            "LexiconTranslator's dictionary was built by reading this eval "
+            "dataset's own Hindi vocabulary (examples/reference_system/eval/"
+            "build_dataset.py) — hi-Deva/hi-Latn scores produced with it as "
+            "the active translator are train-on-test at the vocabulary "
+            "level, not a result a general-purpose lexicon would reproduce. "
+            "See examples/reference_system/README.md.",
+            stacklevel=2,
+        )
 
     def translate(self, text: str, source_lang: str = "hi") -> str:
         words = _TOKEN.findall(text)

@@ -273,6 +273,15 @@ def render_cascade(cascade: Cascade, width: int = 28) -> str:
         (abs(l.points) for l in cascade.losses if l.points is not None), default=1.0
     ) or 1.0
 
+    # `total` is baseline - standard: the true end-to-end gap. When a stage
+    # is `not measurable`, the visible rungs do not sum to it — some of the
+    # gap is hiding in a blank rung. Sharing against `total` in that case
+    # would print "100% of loss" for a stage that, by construction, cannot
+    # account for more than the *measured* portion.
+    measured_positive = sum(
+        l.points for l in cascade.losses if l.points is not None and l.points > 0
+    )
+
     running = cascade.baseline_score or 0.0
     for loss in cascade.losses:
         if loss.points is None:
@@ -295,8 +304,12 @@ def render_cascade(cascade: Cascade, width: int = 28) -> str:
         marker = ""
         dom = cascade.dominant
         if dom is not None and loss.stage == dom.stage:
-            share = abs(loss.points / total) * 100 if total else 0
-            marker = f"   <- {share:.0f}% of loss"
+            if cascade.has_unmeasurable:
+                share = abs(loss.points / measured_positive) * 100 if measured_positive else 0
+                marker = f"   <- {share:.0f}% of measured loss"
+            else:
+                share = abs(loss.points / total) * 100 if total else 0
+                marker = f"   <- {share:.0f}% of loss"
 
         lines.append(
             f"    {loss.label:<34}{-loss.points:>7.1f}  {bar}{flag}{marker}"

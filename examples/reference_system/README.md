@@ -127,3 +127,58 @@ the do-nothing baseline, but it is a containment measure, not a real
 solution to code-switching — a model that actually knows which mid-sentence
 tokens are English would do better, which is why IndicXlit is the real
 implementation here rather than a bigger rule table.
+
+## What auditing the cascade found
+
+**`gold_answer` was the question, not an answer.** `build_dataset.py` set it
+to `queries["en"]` — so `oracle_answer` fed the English *question* to
+rendering as `answer_override`, and the S4 checks (numeral/placeholder/entity
+survival) scored how well a question resembles an answer. That is why the
+`Output rendering` rung read an identical −17.5 for both hi-Deva and
+hi-Latn: it wasn't measuring rendering, it was measuring the same
+category error twice. Fixed by extracting the actual gold span from the
+resolved gold chunk (`gold_answer_for`, using the same overlap-scoring the
+system's own answerer uses) — rendering loss dropped to −4.8 for both
+languages and is now flagged `noise`, which is the honest result for a
+stage that (per the Shape table above) isn't built yet.
+
+**The dominant-stage share overclaimed completeness.** `render_cascade`
+divided the dominant stage's points by `total_loss` regardless of whether
+`Retrieval`/`Generation` were measurable, so it printed "100% of loss" for
+a stage that — with two rungs blank — cannot actually account for the whole
+gap; the missing rungs might hide more. Fixed in `stratum/attribution.py`:
+when any stage is unmeasurable, the denominator is the sum of measured
+positive rungs and the label reads "% of measured loss" instead. hi-Deva's
+`Input + query processing` now reads 73% of measured loss, not 100% of
+loss — a real change in claim, not just wording, since the two numbers
+differ. Covered by `tests/test_attribution.py::test_dominant_share_is_of_measured_loss_when_stages_unmeasurable`.
+
+**numeral_integrity for hi-Latn (33.3%, 11 failures) is not digit
+corruption.** Traced every failure by hand: ASCII digits survive
+`RuleBasedTransliterator` and `LexiconTranslator` unchanged in every case
+tested (`45`, `500000`, `61`, `30`, `40000`, `36`, `15` — see
+`TestTransliteration::test_digits_survive_untouched` and
+`TestQueryPipeline::test_numerals_survive_hi_latn_normalization`). The real
+cause is over-refusal: hi-Latn's marker-only transliteration still leaves
+many Hindi tokens neither converted nor understood (`chahiye`, `ghante`,
+`dusri`, ...), which pulls span-overlap scores below the relevance floor
+more often than for hi-Deva or en — most of the 11 failures are refusals
+with an empty answer, not an answer with the wrong number in it. One case
+(`ins-0047`/`ins-0048`, "pre-existing disease" waiting period) is a genuine
+extractive-answering bug independent of language: the span picker selects a
+nearby sentence mentioning "48 months" from the definitions clause instead
+of the correct "36 months" waiting-period sentence — worth its own fix, but
+an S3 answering issue, not an S0/S1 one.
+
+**`LexiconTranslator`'s dictionary is train-on-test.** Its ~110 words were
+selected by scanning the Devanagari vocabulary that appears across this
+dataset's own `SPEC`/`UNANSWERABLE` entries in `build_dataset.py`, then
+glossed by hand. It does not memorize full queries or answers — coverage is
+per-word, not per-item — but "does this word happen to be in the
+dictionary" is not independent of "was this word used to build the
+dictionary." The hi-Deva/hi-Latn numbers above, produced with this backend
+active, are optimistic relative to what a lexicon built independently of
+this eval set would score. `LexiconTranslator` now warns on construction
+(`tests/test_reference_system.py::test_warns_that_its_lexicon_is_train_on_test`);
+treat any hi-Deva result produced with the stub translator as a plumbing
+check, not a quality claim — `IndicTrans2Translator` is the one to cite.
