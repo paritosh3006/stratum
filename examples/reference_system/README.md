@@ -19,7 +19,8 @@ stratum run \
   --out reports/ref-001
 ```
 
-No downloads. The default embedder is a deterministic character-ngram hasher so
+No downloads. The default embedder is a deterministic character-ngram hasher, and
+script detection / transliteration / translation default to no-download stubs, so
 the whole pipeline runs in about a second.
 
 For real retrieval quality:
@@ -27,6 +28,7 @@ For real retrieval quality:
 ```bash
 pip install -e "examples/reference_system[models]"   # BGE-M3, ~2GB on first use
 pip install -e "examples/reference_system[pdf]"      # PyMuPDF, for real policy PDFs
+pip install -e "examples/reference_system[indic]"    # IndicXlit + IndicTrans2 + fastText lid
 ```
 
 ## Shape
@@ -34,6 +36,7 @@ pip install -e "examples/reference_system[pdf]"      # PyMuPDF, for real policy 
 | Stage | Implementation |
 |---|---|
 | Ingest | PyMuPDF or plain text → paragraph-first recursive chunking → content-addressed `chunk_id` |
+| Query (S0+S1) | Script detection → transliteration → translation, one normalized English query out |
 | Dense | BGE-M3 (or hashing fallback) → exact cosine over an in-memory matrix |
 | Sparse | BM25 Okapi, written out rather than imported |
 | Fusion | Reciprocal rank fusion, `k=60`, each arm independently switchable |
@@ -85,3 +88,42 @@ nothing. The token pattern now includes the Indic block ranges explicitly.
 
 The second one would have silently destroyed sparse retrieval for every Indic
 language while looking like a modelling problem.
+
+## What the query pipeline fixed
+
+`query/` adds S0 (script detection) and S1 (transliteration + translation),
+following the same real-model / no-download-stub split as the embedder:
+
+| Stage | Real | Stub (default, offline) |
+|---|---|---|
+| Script detection | fastText lid218e | Unicode block + Hindi function-word ratio |
+| Transliteration, hi-Latn → Deva | IndicXlit | syllable-table lookup |
+| Translation, hi-Deva → en | IndicTrans2 | hand-built lexicon |
+
+Re-running with the stub pipeline, nothing else changed:
+
+| Language | Before | After |
+|---|---|---|
+| hi-Deva | 14.3 | 77.8 |
+| hi-Latn | 50.8 | 55.6 |
+
+hi-Deva recovered almost entirely. The lexicon covers most of the domain's
+function and content words, so a word-for-word gloss is usually enough for
+BM25 to land on the right chunk — attributable loss on `Input + query
+processing` dropped from 76.2 points to 12.7.
+
+hi-Latn moved less, and the reason is itself a finding worth keeping. This
+dataset's hi-Latn queries are code-mixed by design — "room rent ki limit kya
+hai" says "room", "rent" and "limit" in English mid-sentence, the way real
+Hinglish insurance queries do. Transliterating every token blindly turned
+"room"/"rent" into Devanagari that matches nothing, which scored *worse*
+than doing no query processing at all (19.1, against a 50.8 do-nothing
+baseline) — because the untouched English words used to at least match the
+corpus verbatim, and mangling them threw that away for no gain.
+`SelectiveTransliterator` (query/transliterate.py) is the fix: it only
+converts tokens script detection already flagged as Hindi markers, leaving
+likely-English tokens alone. That recovered the regression and edged past
+the do-nothing baseline, but it is a containment measure, not a real
+solution to code-switching — a model that actually knows which mid-sentence
+tokens are English would do better, which is why IndicXlit is the real
+implementation here rather than a bigger rule table.

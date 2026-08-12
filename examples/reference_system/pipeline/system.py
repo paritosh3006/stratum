@@ -22,6 +22,7 @@ from stratum.endpoint import Capabilities
 
 from .extractive import Span, select_span
 from ..ingest.chunk import Chunk, build_corpus
+from ..query.pipeline import QueryPipeline, build_query_pipeline
 from ..retrieval.embedder import get_embedder
 from ..retrieval.hybrid import Hit, HybridRetriever
 
@@ -40,6 +41,12 @@ class SystemConfig:
     #: being measured: oversized chunks inflate recall by making every chunk
     #: contain a bit of everything.
     target_tokens: int = 180
+    #: S0 + S1. Defaults are the no-download stubs so the system runs
+    #: offline; swap in "fasttext-lid218e" / "indicxlit" / "indictrans2"
+    #: once `examples/reference_system[indic]` is installed.
+    script_detector: str = "heuristic"
+    transliterator: str = "rule-based"
+    translator: str = "lexicon"
 
 
 class ReferenceSystem:
@@ -52,6 +59,9 @@ class ReferenceSystem:
             raise RuntimeError(f"no documents ingested from {config.corpus_dir}")
 
         self.by_id: dict[str, Chunk] = {c.chunk_id: c for c in self.chunks}
+        self.query_pipeline: QueryPipeline = build_query_pipeline(
+            config.script_detector, config.transliterator, config.translator
+        )
         self.retriever = HybridRetriever(
             get_embedder(config.embedder),
             use_dense=config.use_dense,
@@ -70,6 +80,13 @@ class ReferenceSystem:
         context_chunk_ids: list[str] | None = None,
         answer_override: str | None = None,
     ) -> RagResponse:
+        # -- S0 + S1: script detection, transliteration, translation ------
+        # Run unconditionally so `detected_language` reflects what the
+        # system actually saw, even on oracle passes where the harness
+        # already handed over an English query (script detection then
+        # correctly reports "en" and normalization is a no-op).
+        normalized = self.query_pipeline.normalize(query)
+
         # -- S2: retrieval, or the oracle bypass --------------------------
         if context_chunk_ids is not None:
             hits = [
@@ -78,7 +95,7 @@ class ReferenceSystem:
                 if cid in self.by_id
             ]
         else:
-            hits = self.retriever.search(query, k=self.config.top_k)
+            hits = self.retriever.search(normalized.normalized, k=self.config.top_k)
 
         retrieved = [h.chunk_id for h in hits]
 
@@ -87,7 +104,7 @@ class ReferenceSystem:
             answer, refused = answer_override, False
         else:
             span: Span | None = select_span(
-                query,
+                normalized.normalized,
                 hits,
                 min_score=self.config.min_span_score,
                 idf=self.retriever.sparse._idf if self.retriever.sparse else None,
@@ -96,9 +113,13 @@ class ReferenceSystem:
                 return RagResponse(
                     answer="",
                     retrieved_chunk_ids=retrieved,
-                    detected_language=language,
+                    detected_language=normalized.detected_script,
                     refused=True,
-                    raw={"reason": "no span above relevance floor"},
+                    raw={
+                        "reason": "no span above relevance floor",
+                        "normalized_query": normalized.normalized,
+                        "query_pipeline_steps": normalized.steps,
+                    },
                 )
             answer, refused = span.text, False
 
@@ -106,9 +127,13 @@ class ReferenceSystem:
         return RagResponse(
             answer=answer,
             retrieved_chunk_ids=retrieved,
-            detected_language=language,
+            detected_language=normalized.detected_script,
             refused=refused,
-            raw={"n_hits": len(hits)},
+            raw={
+                "n_hits": len(hits),
+                "normalized_query": normalized.normalized,
+                "query_pipeline_steps": normalized.steps,
+            },
         )
 
 

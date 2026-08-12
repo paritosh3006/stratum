@@ -22,6 +22,12 @@ from reference_system.retrieval.hybrid import (  # noqa: E402
     HybridRetriever, reciprocal_rank_fusion, Hit, tokenize,
 )
 from reference_system.retrieval.embedder import HashingEmbedder  # noqa: E402
+from reference_system.query.script import (  # noqa: E402
+    HeuristicScriptDetector, EN, HI_DEVA, HI_LATN,
+)
+from reference_system.query.transliterate import RuleBasedTransliterator  # noqa: E402
+from reference_system.query.translate import LexiconTranslator  # noqa: E402
+from reference_system.query.pipeline import build_query_pipeline  # noqa: E402
 
 CORPUS = ROOT / "examples" / "reference_system" / "corpus"
 
@@ -90,6 +96,88 @@ class TestAnswering:
         assert r.retrieved_chunk_ids and all(
             c in system.by_id for c in r.retrieved_chunk_ids
         )
+
+
+class TestScriptDetection:
+    def test_devanagari_is_exact(self):
+        d = HeuristicScriptDetector()
+        assert d.detect("घुटना बदलने की सर्जरी शामिल है क्या") == HI_DEVA
+
+    def test_plain_english(self):
+        d = HeuristicScriptDetector()
+        assert d.detect("What is the grace period for renewal premium?") == EN
+
+    def test_romanized_hindi(self):
+        d = HeuristicScriptDetector()
+        assert d.detect("mera knee replacement surgery cover hoga kya") == HI_LATN
+
+    def test_empty_text_is_english(self):
+        assert HeuristicScriptDetector().detect("") == EN
+
+
+class TestTransliteration:
+    def test_produces_devanagari(self):
+        out = RuleBasedTransliterator().transliterate("kitna hai")
+        assert any("ऀ" <= ch <= "ॿ" for ch in out)
+
+    def test_deterministic(self):
+        t = RuleBasedTransliterator()
+        assert t.transliterate("kaise kare") == t.transliterate("kaise kare")
+
+
+class TestTranslation:
+    def test_known_words_translate(self):
+        out = LexiconTranslator().translate("घुटना बदलने की सर्जरी शामिल है क्या")
+        assert "knee" in out and "surgery" in out
+
+    def test_unknown_tokens_pass_through(self):
+        # No entry for a made-up token: it must survive unchanged rather
+        # than being dropped or raising.
+        out = LexiconTranslator().translate("क्या xyz123 है")
+        assert "xyz123" in out
+
+
+class TestQueryPipeline:
+    def test_english_passes_through_untouched(self):
+        pipeline = build_query_pipeline()
+        result = pipeline.normalize("What is the grace period?")
+        assert result.detected_script == EN
+        assert result.normalized == "What is the grace period?"
+        assert result.steps == []
+
+    def test_devanagari_is_translated_only(self):
+        pipeline = build_query_pipeline()
+        result = pipeline.normalize("पॉलिसी में कमरे का किराया कितना देय है?")
+        assert result.detected_script == HI_DEVA
+        assert result.steps == ["translate:lexicon"]
+        assert "room" in result.normalized and "rent" in result.normalized
+
+    def test_roman_hindi_is_transliterated_then_translated(self):
+        pipeline = build_query_pipeline()
+        result = pipeline.normalize("mera knee replacement surgery cover hoga kya")
+        assert result.detected_script == HI_LATN
+        assert result.steps == ["transliterate:selective(rule-based)", "translate:lexicon"]
+
+    def test_roman_hindi_leaves_english_content_words_untouched(self):
+        # The regression this guards against: naively transliterating every
+        # token turned "knee"/"surgery"/"cover" into unmatched Devanagari,
+        # which measurably scored worse than doing nothing at all.
+        pipeline = build_query_pipeline()
+        result = pipeline.normalize("mera knee replacement surgery cover hoga kya")
+        for word in ("knee", "replacement", "surgery", "cover"):
+            assert word in result.normalized
+
+    def test_devanagari_query_now_retrieves_the_right_chunk(self, system):
+        # Before this pipeline existed, every Hindi query was matched
+        # against the English index verbatim and retrieved nothing relevant.
+        r = system.answer("पॉलिसी में कमरे का किराया कितना देय है?", "hi-Deva")
+        assert not r.refused
+        assert "room rent" in r.answer.lower()
+        assert r.raw.get("query_pipeline_steps") == ["translate:lexicon"]
+
+    def test_detected_language_reflects_actual_script(self, system):
+        r = system.answer("पॉलिसी में कमरे का किराया कितना देय है?", "hi-Deva")
+        assert r.detected_language == HI_DEVA
 
 
 class TestOracleHooks:
