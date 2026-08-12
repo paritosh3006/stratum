@@ -124,6 +124,16 @@ SPEC: list[tuple] = [
         "hi-Deva": "इस पॉलिसी को दूसरी बीमा कंपनी में कैसे पोर्ट करें?",
         "hi-Latn": "policy ko dusri company me port kaise kare",
     }, {"numerals": ["45"]}),
+    ("q19", "term_heavy", "Claim status updates are sent by SMS using the template", {
+        "en": "What format is used for claim status SMS notifications?",
+        "hi-Deva": "दावा स्थिति SMS सूचना के लिए कौन सा प्रारूप उपयोग होता है?",
+        "hi-Latn": "claim status SMS notification ke liye kaun sa format use hota hai",
+    }, {"placeholders": ["{claim_id}", "{status}", "{amount}"]}),
+    ("q20", "term_heavy", "Policy renewal reminders are sent by email using the template", {
+        "en": "What format is used for policy renewal email reminders?",
+        "hi-Deva": "पॉलिसी नवीनीकरण ईमेल रिमाइंडर के लिए कौन सा प्रारूप उपयोग होता है?",
+        "hi-Latn": "policy renewal email reminder ke liye kaun sa format use hota hai",
+    }, {"placeholders": ["{policy_number}", "{renewal_date}"]}),
 ]
 
 UNANSWERABLE: list[tuple] = [
@@ -205,7 +215,7 @@ def main() -> None:
                 "answerable": True,
                 "numerals": extras.get("numerals", []),
                 "entities": extras.get("entities", []),
-                "placeholders": [],
+                "placeholders": extras.get("placeholders", []),
             })
 
     for pid, queries in UNANSWERABLE:

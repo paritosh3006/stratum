@@ -51,3 +51,11 @@ redressal officer whose details are printed on the policy schedule.
 If the grievance remains unresolved for 30 days, the insured may approach the
 Insurance Ombudsman having jurisdiction over the insured's place of residence.
 The Ombudsman may be approached for claims up to a value of 3000000.
+
+## Claim status notifications
+
+Claim status updates are sent by SMS using the template: Your claim {claim_id}
+has been {status} for an approved amount of {amount}.
+
+Policy renewal reminders are sent by email using the template: Your policy
+{policy_number} is due for renewal on {renewal_date}.

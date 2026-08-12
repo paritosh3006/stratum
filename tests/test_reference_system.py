@@ -28,6 +28,11 @@ from reference_system.query.script import (  # noqa: E402
 from reference_system.query.transliterate import RuleBasedTransliterator  # noqa: E402
 from reference_system.query.translate import LexiconTranslator  # noqa: E402
 from reference_system.query.pipeline import build_query_pipeline  # noqa: E402
+from reference_system.render.mask import mask, unmask, indian_grouping  # noqa: E402
+from reference_system.render.glossary import build_glossary, enforce  # noqa: E402
+from reference_system.render.translate_en import EnHiLexiconTranslator  # noqa: E402
+from reference_system.render.romanize import TableRomanizer  # noqa: E402
+from reference_system.render.pipeline import build_render_pipeline  # noqa: E402
 
 CORPUS = ROOT / "examples" / "reference_system" / "corpus"
 
@@ -202,7 +207,9 @@ class TestQueryPipeline:
         # against the English index verbatim and retrieved nothing relevant.
         r = system.answer("पॉलिसी में कमरे का किराया कितना देय है?", "hi-Deva")
         assert not r.refused
-        assert "room rent" in r.answer.lower()
+        # The answer is rendered into Devanagari (S4), so the check is on
+        # the retrieved chunk, not on literal English text in the answer.
+        assert any("room rent" in system.by_id[c].text.lower() for c in r.retrieved_chunk_ids)
         assert r.raw.get("query_pipeline_steps") == ["translate:lexicon"]
 
     def test_detected_language_reflects_actual_script(self, system):
@@ -218,6 +225,167 @@ class TestQueryPipeline:
         result = pipeline.normalize("45 saal aur 500000 sum insured pe premium kitna hai")
         assert "45" in result.normalized.split()
         assert "500000" in result.normalized.split()
+
+
+class TestMask:
+    def test_placeholder_survives_round_trip(self):
+        m = mask("Your claim {claim_id} is {status}.")
+        assert "{claim_id}" not in m.text and "{status}" not in m.text
+        assert unmask(m.text, m.restore) == "Your claim {claim_id} is {status}."
+
+    def test_numeral_reformatted_not_restored_verbatim(self):
+        # Restoration deliberately does not give back the literal input —
+        # it applies Indian grouping, which is the point of this stage.
+        m = mask("The sub-limit is 500000 per year.")
+        assert unmask(m.text, m.restore) == "The sub-limit is 5,00,000 per year."
+
+    def test_two_masking_passes_do_not_corrupt_each_other(self):
+        # Regression: an earlier sentinel design encoded the counter as
+        # digits, so the numeral-masking pass re-matched digits inside a
+        # placeholder sentinel emitted by the first pass and mangled it.
+        m = mask("Claim {claim_id} for 500000 approved on the 15th.")
+        assert "{claim_id}" not in m.text
+        restored = unmask(m.text, m.restore)
+        assert "{claim_id}" in restored and "5,00,000" in restored and "15" in restored
+
+    def test_indian_grouping(self):
+        assert indian_grouping("500000") == "5,00,000"
+        assert indian_grouping("40000") == "40,000"
+        assert indian_grouping("36") == "36"
+        assert indian_grouping("1234567") == "12,34,567"
+
+
+class TestGlossary:
+    def test_terms_load(self):
+        g = build_glossary()
+        assert "premium" in g.terms and "claim" in g.terms
+
+    def test_enforce_replaces_forbidden_variant(self):
+        out = enforce("Your claim is approved.", "आपका क्लेम स्वीकृत है।", "hi-Deva")
+        assert "दावा" in out and "क्लेम" not in out
+
+    def test_enforce_appends_missing_term(self):
+        out = enforce("Cataract surgery is covered.", "यह शामिल है।", "hi-Deva")
+        assert "मोतियाबिंद" in out
+
+    def test_enforce_is_a_no_op_when_already_correct(self):
+        rendered = "आपका दावा स्वीकृत है।"
+        assert enforce("Your claim is approved.", rendered, "hi-Deva") == rendered
+
+    def test_out_of_scope_term_is_untouched(self):
+        rendered = "कोई परिवर्तन नहीं।"
+        assert enforce("Nothing insurance-related here.", rendered, "hi-Deva") == rendered
+
+    def test_scope_includes_the_query_not_only_the_answer(self):
+        # Regression: the query asks about "cover", but the extracted
+        # answer span describes a sub-limit without using that word at all
+        # — checking only source_en for in-scope terms made enforcement
+        # blind to this, which was most of this reference system's own
+        # terminology_drift failures once actually measured (see
+        # README.md).
+        answer = "Knee replacement surgery is subject to a sub-limit of 200000 per joint."
+        out = enforce(answer, "ghutanaa badalane sarjaree.", "hi-Latn",
+                       query="Is knee replacement surgery covered?")
+        assert "cover" in out
+
+
+class TestRenderTranslateEn:
+    def test_known_words_translate(self):
+        out = EnHiLexiconTranslator().translate("The policy covers this claim.")
+        assert "पॉलिसी" in out and "कवर" in out and "दावा" in out
+
+    def test_articles_are_dropped_not_left_untranslated(self):
+        out = EnHiLexiconTranslator().translate("a claim")
+        assert "a" not in out.split()
+
+    def test_unknown_words_pass_through(self):
+        out = EnHiLexiconTranslator().translate("Arogya Suraksha covers this.")
+        assert "Arogya" in out and "Suraksha" in out
+
+
+class TestRomanize:
+    def test_loanword_with_candra_o(self):
+        # पॉलिसी uses the candra-O matra (ॉ), specific to English loanwords
+        # and easy to omit from a table built around native Sanskrit vowels.
+        assert TableRomanizer().romanize("पॉलिसी") == "polisee"
+
+    def test_virama_suppresses_inherent_vowel(self):
+        # प्रीमियम = प + ् (virama) + र..., so the first consonant must not
+        # get a trailing "a" the way it would with nothing after it.
+        out = TableRomanizer().romanize("प्रीमियम")
+        assert out.startswith("pr")
+
+    def test_non_devanagari_passes_through(self):
+        r = TableRomanizer()
+        assert r.romanize("SMS {claim_id} 500000") == "SMS {claim_id} 500000"
+
+
+class TestRenderPipeline:
+    def test_english_passes_through_untouched(self):
+        rp = build_render_pipeline()
+        answer = "The grace period is 30 days."
+        result = rp.render(answer, "en")
+        assert result.text == answer
+        assert result.steps == []
+
+    def test_hi_deva_preserves_placeholder_and_formats_numeral(self):
+        rp = build_render_pipeline()
+        result = rp.render("Your claim {claim_id} for 500000 has been approved.", "hi-Deva")
+        assert "{claim_id}" in result.text
+        assert "5,00,000" in result.text
+        assert any("ऀ" <= ch <= "ॿ" for ch in result.text)
+
+    def test_hi_latn_preserves_placeholder_and_is_romanized(self):
+        rp = build_render_pipeline()
+        result = rp.render("Your claim {claim_id} for 500000 has been approved.", "hi-Latn")
+        assert "{claim_id}" in result.text
+        assert "5,00,000" in result.text
+        assert not any("ऀ" <= ch <= "ॿ" for ch in result.text)
+
+    def test_hi_latn_glossary_term_uses_english_spelling(self):
+        # The approved hi-Latn form for "policy" is the English spelling
+        # itself, not whatever the romanizer produces for "पॉलिसी"
+        # ("polisee") — the second glossary pass has to fix that up.
+        rp = build_render_pipeline()
+        result = rp.render("Your policy is active.", "hi-Latn")
+        assert "policy" in result.text
+
+    def test_query_only_glossary_term_is_still_enforced(self):
+        # The answer span doesn't mention "cover" at all — only the query
+        # does. Rendering has to consider both, since that's what stratum's
+        # own check_glossary scores against.
+        rp = build_render_pipeline()
+        result = rp.render(
+            "Knee replacement surgery is subject to a sub-limit of 200000 per joint.",
+            "hi-Latn",
+            query="Is knee replacement surgery covered?",
+        )
+        assert "cover" in result.text
+
+
+class TestRenderIntegration:
+    """End to end through ReferenceSystem.answer, not just the render
+    modules in isolation — proves the mask/restore machinery survives
+    contact with the real query pipeline and retriever, not only a
+    hand-built input string."""
+
+    def test_placeholders_survive_a_full_hi_deva_answer(self, system):
+        r = system.answer(
+            "दावा स्थिति SMS सूचना के लिए कौन सा प्रारूप उपयोग होता है?", "hi-Deva"
+        )
+        assert not r.refused
+        assert "{claim_id}" in r.answer
+        assert "{status}" in r.answer
+        assert "{amount}" in r.answer
+
+    def test_placeholders_survive_a_full_hi_latn_answer(self, system):
+        r = system.answer(
+            "claim status SMS notification ke liye kaun sa format use hota hai", "hi-Latn"
+        )
+        assert not r.refused
+        assert "{claim_id}" in r.answer
+        assert "{status}" in r.answer
+        assert "{amount}" in r.answer
 
 
 class TestOracleHooks:

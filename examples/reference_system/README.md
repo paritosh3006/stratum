@@ -15,6 +15,7 @@ python examples/reference_system/eval/build_dataset.py
 stratum run \
   --endpoint examples/reference_system/endpoint.py:endpoint \
   --dataset examples/reference_system/eval/insurance.jsonl \
+  --glossary examples/reference_system/eval/glossary.json \
   --verified "en,hi-Deva,hi-Latn" \
   --out reports/ref-001
 ```
@@ -41,7 +42,7 @@ pip install -e "examples/reference_system[indic]"    # IndicXlit + IndicTrans2 +
 | Sparse | BM25 Okapi, written out rather than imported |
 | Fusion | Reciprocal rank fusion, `k=60`, each arm independently switchable |
 | Answer | Extractive span selection, IDF-weighted overlap, relevance floor → refusal |
-| Render | *not built yet — week 3* |
+| Render (S4) | Placeholder/numeral mask → translation (en → hi-Deva) → glossary enforcement → [hi-Latn: romanize → enforce again] → unmask |
 
 Exact search, not ANN: at a few thousand chunks brute force is milliseconds, and
 an approximate index would inject recall error into the thing being measured.
@@ -205,3 +206,67 @@ this eval set would score. `LexiconTranslator` now warns on construction
 (`tests/test_reference_system.py::test_warns_that_its_lexicon_is_train_on_test`);
 treat any hi-Deva result produced with the stub translator as a plumbing
 check, not a quality claim — `IndicTrans2Translator` is the one to cite.
+
+## What S4 rendering added
+
+`render/` turns the S3 answer span into the query's own language — the
+`Render` row the Shape table used to mark "not built yet". Same real/stub
+split as everywhere else in this codebase:
+
+| Stage | Real | Stub (default, offline) |
+|---|---|---|
+| Translation, en → hi-Deva | IndicTrans2 (en-indic) | hand-built lexicon, written from general insurance vocabulary, not scanned from `build_dataset.py` |
+| Romanization, hi-Deva → hi-Latn | `indic_transliteration` (ITRANS scheme) | character-table Devanagari → Roman |
+| Placeholder / numeral integrity | — | mask before translation, restore after (verbatim for placeholders, Indian-grouped for numerals) |
+| Glossary enforcement | — | `eval/glossary.json`, the same file `stratum run --glossary` scores against |
+
+Two new corpus sentences (`policy_network_claims.md`'s "Claim status
+notifications" section) carry genuine `{placeholder}` tokens — an SMS and an
+email template — so `placeholder_integrity` has real content to measure
+instead of "no placeholders in source" on every item.
+
+**A bracket-plus-letter sentinel collided with the translator's own
+tokenizer.** The first mask design used `⟦A⟧`-style tokens; `translate_en.py`'s
+EN→HI tokenizer splits on letter/non-letter boundaries, so `⟦A⟧` split into
+`⟦`, `A`, `⟧` — and the bare `A` matched the dictionary's `"a" → ""`
+(article, dropped) entry, silently erasing the placeholder. Fixed by using a
+single Unicode Private Use Area character per sentinel (`mask.py`): one
+codepoint has no internal boundary for any tokenizer in this pipeline to
+split on, and it isn't a Latin letter, digit, or Devanagari character, so no
+table or lexicon here has an entry that could match it. Caught by
+`TestMask::test_two_masking_passes_do_not_corrupt_each_other` before it ever
+reached a real run.
+
+**Glossary enforcement checked the wrong text for what's in scope.** The
+first version decided which glossary terms applied by scanning the
+*answer span* (`source_en`) — but stratum's own `check_glossary` scores
+against the **query** (`item.query`). A user asking "is knee surgery
+covered?" is in scope for "cover" regardless of whether the retrieved
+sub-limit sentence happens to use that word, and it usually doesn't.
+Checking only the answer made enforcement blind to most of its own
+`terminology_drift` failures — measured, not assumed: fixing this dropped
+hi-Latn's `terminology_drift` count from 10 to 7 and its
+`glossary_adherence` score from 44.4% to 61.1% in the same run. `enforce()`
+now takes the query as well as the answer (`render/glossary.py`,
+`render/pipeline.py`); the remaining 7 failures are empty answers from the
+already-documented hi-Latn over-refusal issue above, not an enforcement gap
+— confirmed by checking that every remaining failure's output is empty.
+
+Re-running with S4 wired in, `--glossary` passed, and the two new items:
+
+| Language | Placeholder integrity | Glossary adherence | Quality |
+|---|---|---|---|
+| en | 100% | 100% | 92.4 |
+| hi-Deva | 100% | 100% | 85.5 (indistinguishable from baseline) |
+| hi-Latn | 100% | 61.1% (gate: 85%, still failing) | 60.9 |
+
+Placeholder integrity is clean across all three languages — the mask/restore
+mechanism holds up from an isolated string through the real query pipeline,
+retriever, and render pipeline together
+(`TestRenderIntegration`). Glossary adherence is clean for en/hi-Deva and
+still fails the gate for hi-Latn, entirely because of over-refusal rather
+than mistranslated terminology: there is no approved term to enforce in an
+answer that's empty. That over-refusal is the same S1 coverage gap
+documented above, not a new S4 problem — fixing it means improving
+`SelectiveTransliterator`'s marker coverage or the S1 lexicon, not the
+renderer.

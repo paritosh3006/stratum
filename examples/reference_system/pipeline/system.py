@@ -23,6 +23,7 @@ from stratum.endpoint import Capabilities
 from .extractive import Span, select_span
 from ..ingest.chunk import Chunk, build_corpus
 from ..query.pipeline import QueryPipeline, build_query_pipeline
+from ..render.pipeline import RenderPipeline, build_render_pipeline
 from ..retrieval.embedder import get_embedder
 from ..retrieval.hybrid import Hit, HybridRetriever
 
@@ -47,6 +48,10 @@ class SystemConfig:
     script_detector: str = "heuristic"
     transliterator: str = "rule-based"
     translator: str = "lexicon"
+    #: S4. Same no-download-stub default; swap in "indictrans2-en-indic" /
+    #: "indic-transliteration" once the indic extra is installed.
+    render_translator: str = "lexicon-en-hi"
+    render_romanizer: str = "table-romanizer"
 
 
 class ReferenceSystem:
@@ -61,6 +66,9 @@ class ReferenceSystem:
         self.by_id: dict[str, Chunk] = {c.chunk_id: c for c in self.chunks}
         self.query_pipeline: QueryPipeline = build_query_pipeline(
             config.script_detector, config.transliterator, config.translator
+        )
+        self.render_pipeline: RenderPipeline = build_render_pipeline(
+            config.render_translator, config.render_romanizer
         )
         self.retriever = HybridRetriever(
             get_embedder(config.embedder),
@@ -123,9 +131,16 @@ class ReferenceSystem:
                 )
             answer, refused = span.text, False
 
-        # -- S4: rendering slots in here (week 3) -------------------------
+        # -- S4: rendering --------------------------------------------------
+        # Runs on whichever answer text S3 produced above — the system's own
+        # extracted span on standard/oracle_query/oracle_context passes, or
+        # the gold answer_override on oracle_answer/baseline. That's the
+        # point of the ladder: oracle_answer repairs S0..S3 and leaves S4 to
+        # the system's own rendering, so this call has to happen either way.
+        rendered = self.render_pipeline.render(answer, language, query=query)
+
         return RagResponse(
-            answer=answer,
+            answer=rendered.text,
             retrieved_chunk_ids=retrieved,
             detected_language=normalized.detected_script,
             refused=refused,
@@ -133,6 +148,7 @@ class ReferenceSystem:
                 "n_hits": len(hits),
                 "normalized_query": normalized.normalized,
                 "query_pipeline_steps": normalized.steps,
+                "render_steps": rendered.steps,
             },
         )
 

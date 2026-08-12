@@ -1,0 +1,25 @@
+{
+  "terms": {
+    "premium": {"hi-Deva": ["प्रीमियम"], "hi-Latn": ["premium"]},
+    "policy": {"hi-Deva": ["पॉलिसी"], "hi-Latn": ["policy"]},
+    "claim": {"hi-Deva": ["दावा"], "hi-Latn": ["claim"]},
+    "cover": {"hi-Deva": ["कवर"], "hi-Latn": ["cover"]},
+    "waiting period": {"hi-Deva": ["प्रतीक्षा अवधि"], "hi-Latn": ["waiting period"]},
+    "sum insured": {"hi-Deva": ["बीमा राशि"], "hi-Latn": ["sum insured"]},
+    "hospital": {"hi-Deva": ["अस्पताल"], "hi-Latn": ["hospital"]},
+    "grace period": {"hi-Deva": ["छूट अवधि"], "hi-Latn": ["grace period"]},
+    "co-payment": {"hi-Deva": ["सह-भुगतान"], "hi-Latn": ["copayment"]},
+    "cumulative bonus": {"hi-Deva": ["संचयी बोनस"], "hi-Latn": ["cumulative bonus"]},
+    "cashless": {"hi-Deva": ["कैशलेस"], "hi-Latn": ["cashless"]},
+    "reimbursement": {"hi-Deva": ["प्रतिपूर्ति"], "hi-Latn": ["reimbursement"]},
+    "cataract": {"hi-Deva": ["मोतियाबिंद"], "hi-Latn": ["cataract"]},
+    "maternity": {"hi-Deva": ["प्रसूति"], "hi-Latn": ["maternity"]},
+    "pre-existing disease": {"hi-Deva": ["पूर्व-मौजूदा बीमारी"], "hi-Latn": ["pre-existing disease"]},
+    "room rent": {"hi-Deva": ["कमरे का किराया"], "hi-Latn": ["room rent"]},
+    "ombudsman": {"hi-Deva": ["लोकपाल"], "hi-Latn": ["ombudsman"]}
+  },
+  "forbidden": {
+    "claim": {"hi-Deva": ["क्लेम"]},
+    "policy": {"hi-Deva": ["नीति"]}
+  }
+}
