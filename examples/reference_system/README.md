@@ -309,3 +309,37 @@ to cascade stages a judge-free run can't measure: an honest "didn't run" is
 worse to hide than to report as a problem. `tests/test_report.py` covers
 both the missing-key and present-but-`n=0` shapes a real Estimate can take,
 plus that gates with real data are unaffected.
+
+## Judged metrics (S2/S3)
+
+`ReferenceSystem.answer` now populates `retrieved_context` (the retrieved
+chunks' actual text, not just their ids), so this is a judge-capable
+endpoint — Retrieval and Generation can go from "not measured" to real,
+numbered rungs:
+
+```bash
+stratum calibrate \
+  --endpoint examples/reference_system/endpoint.py:endpoint \
+  --dataset examples/reference_system/eval/insurance.jsonl \
+  --judge stub                                  # offline; use `ollama` for real
+
+stratum run \
+  --endpoint examples/reference_system/endpoint.py:endpoint \
+  --dataset examples/reference_system/eval/insurance.jsonl \
+  --judge stub --calibration calibration.json \
+  --verified "en,hi-Deva,hi-Latn"
+```
+
+Don't read the resulting hi-Deva/hi-Latn faithfulness or correctness
+numbers as a quality claim if `--judge stub` is what produced them.
+`StubJudge` is plain token overlap — no model, offline, deterministic —
+and S4 renders the answer into the query's own language before this stage
+ever sees it. Token-overlapping a Hindi answer against an English
+`gold_answer`/context reads as near-total disagreement regardless of
+whether the answer is right; the stub has no way to know "प्रीमियम" and
+"premium" mean the same thing. Same category of limitation `HashingEmbedder`
+has for cross-lingual retrieval, for the same reason — see
+`stratum/judges/backends.py`'s docstring (in the core package, not this
+directory). Use `stub` to confirm the judge/calibration *wiring* works end
+to end offline; calibrate and cite `--judge ollama` (with qwen2.5:7b or
+better) for a real cross-lingual quality signal.

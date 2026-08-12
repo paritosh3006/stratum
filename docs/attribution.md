@@ -85,6 +85,31 @@ upper bounds. stratum does not assign them a number the method cannot support.
 This is why a run with no judge shows two blank rungs. That is the honest
 picture, not a bug.
 
+Getting those rungs filled in is a two-step, deliberately manual process:
+
+```bash
+stratum calibrate \
+  --endpoint your_endpoint.py:endpoint \
+  --dataset your_dataset.jsonl \
+  --judge ollama            # or ollama:<model>, or the offline `stub` default
+```
+
+hand-labels a sample per language, scores the same sample with the judge, and
+writes `calibration.json` with a Cohen's κ per (language, metric) — weighted,
+since these are ordinal 0-3 rubrics, not unordered categories (see
+`stats.cohens_kappa`). A language only starts contributing S2/S3 loss once its
+κ clears `--threshold` (default 0.60) *and* the judge that's actually running
+matches the one that earned the calibration:
+
+```bash
+stratum run --endpoint ... --dataset ... --judge ollama --calibration calibration.json
+```
+
+Swap the judge's model without recalibrating and every language reverts to
+uncalibrated — a kappa measured against one model is not evidence about a
+different one, so `CalibrationRegistry.permits` checks `judge_id`, not just
+the kappa threshold.
+
 **3. Negative losses are reported, never clamped.**
 
 Repairing a stage can appear to *hurt*, through sampling noise. Clamping to zero
@@ -140,3 +165,12 @@ you declare them.
 Partial support is fine and common. Start with `accepts_query_override` — it is
 the cheapest to wire and it alone separates "translation broke it" from
 "everything downstream broke it", which is the most useful single split.
+
+Faithfulness judging needs one more thing `RagResponse` carries but nothing
+above requires: `retrieved_context`, the retrieved passages themselves (not
+just `retrieved_chunk_ids`). stratum has no corpus of its own, so a judge has
+no way to check what the answer should be grounded in unless the endpoint
+hands over the actual text. Leave it empty and faithfulness simply isn't
+judged — the same graceful degradation as an unset `gold_answer` leaving
+correctness unjudged — rather than the harness reaching into a corpus it was
+never given.

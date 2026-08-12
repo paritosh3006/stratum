@@ -99,9 +99,21 @@ class CalibrationRegistry:
     def get(self, language: str, metric: str) -> Calibration | None:
         return self.records.get((language, metric))
 
-    def permits(self, language: str, metric: str) -> bool:
+    def permits(self, language: str, metric: str, judge_id: str | None = None) -> bool:
+        """Whether a judged score for (language, metric) may be trusted.
+
+        `judge_id`, when given, must match the judge that earned the
+        calibration record. A kappa measured against one model says
+        nothing about a different one — swap `stratum run --judge`'s model
+        after calibrating and the registry must stop permitting, not keep
+        applying a trust score that no longer describes what's running.
+        """
         cal = self.get(language, metric)
-        return cal is not None and cal.is_trustworthy
+        if cal is None or not cal.is_trustworthy:
+            return False
+        if judge_id is not None and cal.judge_id != judge_id:
+            return False
+        return True
 
     def status(self, language: str, metric: str) -> str:
         cal = self.get(language, metric)

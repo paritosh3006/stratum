@@ -82,3 +82,139 @@ def test_experimental_language_excluded_from_gates():
     r.evaluate_gates([Gate(metric="placeholder_integrity", min_absolute=100.0)])
     gate = r.gates[0]
     assert gate.skipped_reason is not None
+
+
+# --------------------------------------------------------------------------
+# Judge wiring: the mock endpoint above has no retrieved_context and its
+# gold_answer is the question restated, neither suited to judging — a
+# small self-contained fixture stands in for the S2/S3 judged-metric tests.
+# --------------------------------------------------------------------------
+
+def _judge_dataset():
+    from stratum.dataset import EvalItem
+
+    def item(id_, language, parallel_id="p1"):
+        return EvalItem(
+            id=id_, language=language, slice="parallel_core", parallel_id=parallel_id,
+            query="What is the grace period?",
+            gold_answer="The grace period is 30 days.", gold_chunk_ids=["c1"],
+        )
+
+    return Dataset(items=[item("en1", "en"), item("hi1", "hi-Deva")])
+
+
+def _judge_endpoint():
+    from stratum.endpoint import CallableEndpoint, Capabilities, RagResponse
+
+    def rag(query, language, *, context_chunk_ids=None, answer_override=None):
+        context = ["The grace period is 30 days, allowed for premium payment."]
+        retrieved = context_chunk_ids if context_chunk_ids is not None else ["c1"]
+        answer = answer_override if answer_override is not None else "The grace period is 30 days."
+        return RagResponse(
+            answer=answer, retrieved_chunk_ids=retrieved, retrieved_context=context,
+            detected_language=language,
+        )
+
+    return CallableEndpoint(rag, capabilities=Capabilities(
+        accepts_query_override=True, accepts_context_override=True,
+        accepts_answer_override=True,
+    ))
+
+
+def test_no_judge_leaves_judged_scores_unset():
+    h = Harness(_judge_endpoint(), _judge_dataset())
+    item = list(_judge_dataset())[0]
+    res = h._run_item(item, "standard")
+    assert "faithfulness" not in res.scores
+    assert "answer_correctness" not in res.scores
+
+
+def test_judge_without_calibration_leaves_judged_scores_unset():
+    from stratum.judges.backends import StubJudge
+    h = Harness(_judge_endpoint(), _judge_dataset(), judge=StubJudge())
+    item = list(_judge_dataset())[0]
+    res = h._run_item(item, "standard")
+    assert "faithfulness" not in res.scores
+    assert "answer_correctness" not in res.scores
+
+
+def test_judge_with_trustworthy_calibration_populates_judged_scores():
+    from stratum.judges import Calibration, CalibrationRegistry
+    from stratum.judges.backends import StubJudge
+
+    reg = CalibrationRegistry()
+    for metric in ("faithfulness", "answer_correctness"):
+        reg.register(Calibration(
+            language="hi-Deva", metric=metric, kappa=0.8, n_labelled=10,
+            judge_id="stub-token-overlap",
+        ))
+
+    h = Harness(_judge_endpoint(), _judge_dataset(), judge=StubJudge(), calibration=reg)
+    hi_item = next(i for i in _judge_dataset() if i.language == "hi-Deva")
+    res = h._run_item(hi_item, "standard")
+    assert "faithfulness" in res.scores
+    assert "answer_correctness" in res.scores
+    # answer_correctness is stored on the 0..1 composite scale, not the 0-3 rubric.
+    assert 0.0 <= res.scores["answer_correctness"] <= 1.0
+
+
+def test_calibration_for_a_different_judge_id_does_not_apply():
+    from stratum.judges import Calibration, CalibrationRegistry
+    from stratum.judges.backends import StubJudge
+
+    reg = CalibrationRegistry()
+    reg.register(Calibration(
+        language="hi-Deva", metric="faithfulness", kappa=0.9, n_labelled=10,
+        judge_id="ollama:qwen2.5:7b",  # calibrated for a different judge
+    ))
+
+    h = Harness(_judge_endpoint(), _judge_dataset(), judge=StubJudge(), calibration=reg)
+    hi_item = next(i for i in _judge_dataset() if i.language == "hi-Deva")
+    res = h._run_item(hi_item, "standard")
+    assert "faithfulness" not in res.scores
+
+
+def test_cascade_s2_s3_unmeasured_without_calibration():
+    h = Harness(_judge_endpoint(), _judge_dataset())
+    r = h.run()
+    cascade = r.cascades[0]
+    s2 = next(s for s in cascade["by_stage"] if s["stage"] == "s2_retrieval")
+    assert s2["points_lost"] is None
+
+
+def test_cascade_s2_s3_measured_with_calibration():
+    from stratum.judges import Calibration, CalibrationRegistry
+    from stratum.judges.backends import StubJudge
+
+    reg = CalibrationRegistry()
+    for metric in ("faithfulness", "answer_correctness"):
+        reg.register(Calibration(
+            language="hi-Deva", metric=metric, kappa=0.8, n_labelled=10,
+            judge_id="stub-token-overlap",
+        ))
+    h = Harness(_judge_endpoint(), _judge_dataset(), judge=StubJudge(), calibration=reg)
+    r = h.run()
+    cascade = r.cascades[0]
+    s2 = next(s for s in cascade["by_stage"] if s["stage"] == "s2_retrieval")
+    assert s2["points_lost"] is not None
+
+
+def test_run_warns_when_judge_configured_but_uncalibrated():
+    from stratum.judges.backends import StubJudge
+    h = Harness(_judge_endpoint(), _judge_dataset(), judge=StubJudge())
+    r = h.run()
+    assert any("not calibrated" in w for w in r.warnings)
+
+
+def test_run_warns_which_language_metric_pairs_are_scoring():
+    from stratum.judges import Calibration, CalibrationRegistry
+    from stratum.judges.backends import StubJudge
+
+    reg = CalibrationRegistry()
+    reg.register(Calibration(
+        language="hi-Deva", metric="faithfulness", kappa=0.8, n_labelled=10,
+        judge_id="stub-token-overlap",
+    ))
+    h = Harness(_judge_endpoint(), _judge_dataset(), judge=StubJudge(), calibration=reg)
+    r = h.run()
+    assert any("hi-Deva/faithfulness" in w for w in r.warnings)

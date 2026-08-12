@@ -106,6 +106,7 @@ class ReferenceSystem:
             hits = self.retriever.search(normalized.normalized, k=self.config.top_k)
 
         retrieved = [h.chunk_id for h in hits]
+        context = [h.text for h in hits]
 
         # -- S3: answering, or the oracle bypass --------------------------
         if answer_override is not None:
@@ -121,6 +122,7 @@ class ReferenceSystem:
                 return RagResponse(
                     answer="",
                     retrieved_chunk_ids=retrieved,
+                    retrieved_context=context,
                     detected_language=normalized.detected_script,
                     refused=True,
                     raw={
@@ -142,6 +144,7 @@ class ReferenceSystem:
         return RagResponse(
             answer=rendered.text,
             retrieved_chunk_ids=retrieved,
+            retrieved_context=context,
             detected_language=normalized.detected_script,
             refused=refused,
             raw={

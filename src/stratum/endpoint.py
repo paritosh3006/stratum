@@ -20,6 +20,12 @@ from pydantic import BaseModel, Field
 class RagResponse(BaseModel):
     answer: str
     retrieved_chunk_ids: list[str] = Field(default_factory=list)
+    #: The retrieved passages themselves, in the same order as
+    #: `retrieved_chunk_ids` — stratum has no corpus of its own, so this is
+    #: the only way a judge can see what the answer should be grounded in.
+    #: Optional: leave empty and faithfulness simply isn't judged, the same
+    #: way an unset `gold_answer` leaves correctness unjudged.
+    retrieved_context: list[str] = Field(default_factory=list)
     detected_language: str | None = None
     refused: bool = False
     latency_ms: dict[str, float] = Field(default_factory=dict)
@@ -114,6 +120,7 @@ class HttpEndpoint:
         *,
         answer_field: str = "answer",
         chunks_field: str = "retrieved_chunk_ids",
+        context_field: str = "retrieved_context",
         refused_field: str = "refused",
         headers: dict[str, str] | None = None,
         timeout: float = 60.0,
@@ -122,6 +129,7 @@ class HttpEndpoint:
         self.url = url
         self.answer_field = answer_field
         self.chunks_field = chunks_field
+        self.context_field = context_field
         self.refused_field = refused_field
         self.headers = headers or {}
         self.timeout = timeout
@@ -157,6 +165,7 @@ class HttpEndpoint:
         return RagResponse(
             answer=data.get(self.answer_field, ""),
             retrieved_chunk_ids=data.get(self.chunks_field, []),
+            retrieved_context=data.get(self.context_field, []),
             detected_language=data.get("detected_language"),
             refused=bool(data.get(self.refused_field, False)),
             latency_ms={"end_to_end": elapsed},

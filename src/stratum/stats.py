@@ -152,6 +152,78 @@ def crosses_zero(est: Estimate) -> bool:
     return est.ci_low <= 0.0 <= est.ci_high
 
 
+def cohens_kappa(a: list[int], b: list[int], *, weights: str = "linear") -> float:
+    """Weighted agreement between two raters' categorical judgements.
+
+    `weights="linear"` (the default, and what calibrate.py always uses)
+    penalises a two-point disagreement on the 0-3 rubric twice as much as a
+    one-point one. Plain nominal kappa (`weights="none"`) treats every
+    disagreement as equally bad regardless of how far apart the ratings
+    are — correct for unordered categories, wrong for an ordinal rubric
+    where a human 3 and a judge 0 is a much worse disagreement than a human
+    3 and a judge 2. `weights="quadratic"` penalises distance more steeply
+    still, for callers who want large disagreements to dominate the score.
+
+    Weight is computed from the actual rating *values*, not their rank
+    among whatever happened to appear in this particular sample — a 0-vs-3
+    disagreement is twice as bad as a 0-vs-1.5-away one, regardless of what
+    other values occur. There is deliberately no parameter to pin a wider
+    category domain than what was observed (e.g. forcing the rubric's full
+    0-3 range even when a sample only ever hit 1s and 2s): linear and
+    quadratic weights normalise by the observed span, and that
+    normalisation is a single constant multiplied through every term of
+    both the observed and expected sums alike, so it cancels in their
+    ratio — pinning a wider span cannot change the resulting κ. Checked by
+    computing it both ways rather than assumed; see
+    `TestCohensKappa::test_weight_normalisation_is_invariant_to_scale`.
+    """
+    if len(a) != len(b):
+        raise ValueError(f"rating lists must be the same length: {len(a)} != {len(b)}")
+    if not a:
+        raise ValueError("cannot compute kappa over zero ratings")
+
+    cats = sorted(set(a) | set(b))
+    k = len(cats)
+    idx = {c: i for i, c in enumerate(cats)}
+    n = len(a)
+    lo, hi = cats[0], cats[-1]
+    span = hi - lo
+
+    def w(ci: int, cj: int) -> float:
+        if weights == "none":
+            return 0.0 if ci == cj else 1.0
+        if weights == "linear":
+            return abs(ci - cj) / span if span else 0.0
+        if weights == "quadratic":
+            return ((ci - cj) / span) ** 2 if span else 0.0
+        raise ValueError(f"unknown weights: {weights!r}")
+
+    observed = [[0] * k for _ in range(k)]
+    for x, y in zip(a, b):
+        observed[idx[x]][idx[y]] += 1
+
+    row_totals = [sum(row) for row in observed]
+    col_totals = [sum(observed[i][j] for i in range(k)) for j in range(k)]
+
+    po = sum(
+        w(cats[i], cats[j]) * observed[i][j] for i in range(k) for j in range(k)
+    ) / n
+    pe = sum(
+        w(cats[i], cats[j]) * row_totals[i] * col_totals[j]
+        for i in range(k) for j in range(k)
+    ) / (n * n)
+
+    if pe == 0:
+        # Every rating either agrees outright or falls on a weight-zero
+        # pair (only possible when every rating that occurred is the same
+        # single value) — no disagreement was possible under this
+        # weighting to begin with, so there is nothing chance could have
+        # produced instead. Agreement, not an undefined ratio.
+        return 1.0
+
+    return 1.0 - po / pe
+
+
 def bootstrap_paired_difference(
     a: list[float | None],
     b: list[float | None],

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from .attribution import Cascade, build_cascade
 from .dataset import Dataset, EvalItem
 from .endpoint import Endpoint, RagResponse
-from .judges import CalibrationRegistry
+from .judges import CalibrationRegistry, JudgeBackend
 from .metrics import s2_retrieval as s2
 from .metrics import s4_rendering as s4
 from .report import Failure, LanguageResult, Report
@@ -24,15 +24,22 @@ from .stats import Estimate, bootstrap_mean, bootstrap_paired_difference
 #:
 #: Intermediate metrics (recall, language detection) remain in the report as
 #: diagnostics. They describe how a stage behaved; they do not price it.
+#:
+#: faithfulness/answer_correctness only ever land in an item's scores when a
+#: judge is configured *and* `CalibrationRegistry.permits` the language for
+#: that metric — otherwise `_composite` never sees the key and renormalises
+#: over what's left, exactly like an item with no placeholders skips that
+#: weight. No calibration anywhere means these two are absent everywhere,
+#: which is what keeps S2/S3 "not measured" the default rather than a number
+#: nobody calibrated.
 OUTCOME_WEIGHTS: dict[str, float] = {
     "answered_correctly": 2.0,
     "placeholder_integrity": 1.0,
     "numeral_integrity": 1.0,
     "glossary_adherence": 1.0,
     "entity_preservation": 1.0,
-    # Judged metrics join here once calibrated; see judges/base.py.
-    # "faithfulness": 2.0,
-    # "answer_correctness": 2.0,
+    "faithfulness": 2.0,
+    "answer_correctness": 2.0,
 }
 
 #: Diagnostics reported per language but excluded from the outcome score.
@@ -68,6 +75,7 @@ class Harness:
         baseline_language: str = "en",
         glossary: s4.Glossary | None = None,
         k: int = 5,
+        judge: JudgeBackend | None = None,
         calibration: CalibrationRegistry | None = None,
         verified_languages: list[str] | None = None,
     ) -> None:
@@ -76,8 +84,15 @@ class Harness:
         self.baseline_language = baseline_language
         self.glossary = glossary
         self.k = k
+        self.judge = judge
         self.calibration = calibration or CalibrationRegistry()
         self.verified_languages = verified_languages
+
+    # ------------------------------------------------------------------
+    def _judge_permits(self, language: str, metric: str) -> bool:
+        if self.judge is None:
+            return False
+        return self.calibration.permits(language, metric, self.judge.judge_id)
 
     # ------------------------------------------------------------------
     def run(self, system_label: str = "system-under-test") -> Report:
@@ -90,6 +105,25 @@ class Harness:
                 "endpoint declares no oracle-pass support — attribution unavailable; "
                 "see docs/attribution.md for the three override hooks"
             )
+
+        if self.judge is not None:
+            permitted = [
+                f"{lang}/{metric}"
+                for lang in self.dataset.languages
+                for metric in ("faithfulness", "answer_correctness")
+                if self._judge_permits(lang, metric)
+            ]
+            if permitted:
+                warnings.append(
+                    f"judge {self.judge.judge_id!r} calibrated and scoring: "
+                    f"{', '.join(permitted)}"
+                )
+            else:
+                warnings.append(
+                    f"judge {self.judge.judge_id!r} configured but not calibrated for "
+                    f"any language/metric — S2/S3 remain not measured; run "
+                    f"`stratum calibrate` first"
+                )
 
         # -- standard pass over everything -------------------------------
         standard: list[ItemResult] = [self._run_item(i, "standard") for i in self.dataset]
@@ -189,7 +223,7 @@ class Harness:
         pass_scores = {p: scores_for(p) for p in supported}
 
         judged = any(
-            self.calibration.permits(language, m)
+            self._judge_permits(language, m)
             for m in ("faithfulness", "answer_correctness")
         )
         return build_cascade(
@@ -298,6 +332,21 @@ class Harness:
                     res.failures.append(self._fail(item, "terminology_drift", "s4",
                                                    gl.detail, resp.answer))
 
+        # -- S2/S3 judged content, only where calibration permits it --------
+        # Runs on every pass, not just standard: the cascade computes a
+        # per-pass delta, and comparing a composite that includes judged
+        # content against one that doesn't would price the judge's opinion
+        # as if it were a stage's loss. Skipped for refusals/empty answers
+        # (nothing to judge) and when the endpoint or item doesn't supply
+        # what the judge needs (retrieved_context, gold_answer).
+        if resp.answer and not resp.refused:
+            if resp.retrieved_context and self._judge_permits(item.language, "faithfulness"):
+                j = self.judge.judge_faithfulness(resp.answer, resp.retrieved_context, item.language)
+                res.scores["faithfulness"] = j.score
+            if item.gold_answer and self._judge_permits(item.language, "answer_correctness"):
+                j = self.judge.judge_correctness(resp.answer, item.gold_answer, item.language)
+                res.scores["answer_correctness"] = j.score / 3.0  # 0-3 rubric -> 0..1 composite
+
         res.composite = self._composite(res.scores)
         return res
 
@@ -337,6 +386,7 @@ class Harness:
                 "recall_at_k", "language_detection", "over_refusal",
                 "placeholder_integrity", "numeral_integrity",
                 "entity_preservation", "glossary_adherence", "answered_correctly",
+                "faithfulness", "answer_correctness",
             )
         }
         metrics["mrr"] = est("mrr", scale=1.0).as_dict()
