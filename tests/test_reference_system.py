@@ -97,6 +97,18 @@ class TestAnswering:
             c in system.by_id for c in r.retrieved_chunk_ids
         )
 
+    def test_span_selection_prefers_answer_over_definition(self, system):
+        # Both the "pre-existing disease" definition (48 months, singular
+        # "disease") and the actual waiting-period sentence (36 months,
+        # plural "diseases", "covered" not "cover") were retrieved for this
+        # query; without stemmed matching, exact-token overlap favoured the
+        # definition purely on "disease" matching singular-for-singular.
+        r = system.answer(
+            "How long must I wait for a pre-existing disease to be covered?", "en"
+        )
+        assert "36 months" in r.answer
+        assert "48 months" not in r.answer
+
 
 class TestScriptDetection:
     def test_devanagari_is_exact(self):

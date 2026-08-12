@@ -148,10 +148,33 @@ divided the dominant stage's points by `total_loss` regardless of whether
 a stage that — with two rungs blank — cannot actually account for the whole
 gap; the missing rungs might hide more. Fixed in `stratum/attribution.py`:
 when any stage is unmeasurable, the denominator is the sum of measured
-positive rungs and the label reads "% of measured loss" instead. hi-Deva's
-`Input + query processing` now reads 73% of measured loss, not 100% of
+positive rungs and the label reads "% of measured loss" instead. hi-Latn's
+`Input + query processing` now reads 88% of measured loss, not 100% of
 loss — a real change in claim, not just wording, since the two numbers
 differ. Covered by `tests/test_attribution.py::test_dominant_share_is_of_measured_loss_when_stages_unmeasurable`.
+
+**The "pre-existing disease" span-selection bug is fixed.** Both the
+definition sentence and the actual waiting-period sentence were always
+retrieved — the correct one usually ranked first — so this was never a
+retrieval problem. `select_span`'s overlap scoring matched on exact token
+equality, and "disease" (query) matching the *definition*'s singular
+"disease" outscored "diseases"/"covered" (query: "cover") failing to match
+the answer sentence's plural/inflected forms at all. `_stem` in
+`pipeline/extractive.py` now matches on a light suffix-stripped form for
+scoring purposes while still pricing each match by its real token's IDF, so
+plurals and simple verb forms no longer lose to an exact-but-wrong match.
+Scoped to span selection only — `tokenize()` and the BM25 index are
+untouched, so retrieval ranking doesn't change. Rerunning:
+
+| Language | Before this fix | After |
+|---|---|---|
+| hi-Deva | 77.8 | **84.1**, now indistinguishable from baseline |
+| hi-Latn | 55.6 | **57.1** |
+
+hi-Deva's remaining gap to English is no longer distinguishable from noise
+at this sample size — the query pipeline plus this fix closes essentially
+all of it. hi-Latn's gap is still real and still `Input + query processing`
+dominant, consistent with the code-switching limitation described above.
 
 **numeral_integrity for hi-Latn (33.3%, 11 failures) is not digit
 corruption.** Traced every failure by hand: ASCII digits survive

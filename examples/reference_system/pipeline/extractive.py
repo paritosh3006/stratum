@@ -38,6 +38,33 @@ def span_id_for(chunk_id: str, text: str) -> str:
     return f"{chunk_id}#{digest}"
 
 
+def _stem(token: str) -> str:
+    """Strip a plural/verb suffix for matching purposes only. ASCII-only,
+    on purpose — Devanagari/Tamil tokens never take this path, and by the
+    time a token reaches span scoring it has already been through the query
+    pipeline's translation stage if it started elsewhere.
+
+    Exists because "diseases" not matching "disease", and "covered" not
+    matching "cover", picked the wrong sentence for the "pre-existing
+    disease" question: the query mentioned "disease"/"cover" and the
+    *definition* sentence ("Pre-existing disease means...", singular)
+    matched those tokens exactly, while the actual answer sentence
+    ("...diseases are covered...") scored lower purely on word form. Real
+    stemming (Porter et al.) handles this properly; this is the three-rule
+    version that fixes that failure mode without dragging in a dependency
+    for a codebase that prides itself on a forty-line BM25.
+    """
+    if not token.isascii() or len(token) < 5:
+        return token
+    if token.endswith("ing") and len(token) - 3 >= 3:
+        return token[:-3]
+    if token.endswith("ed") and len(token) - 2 >= 3:
+        return token[:-2]
+    if token.endswith("s") and not token.endswith("ss") and len(token) - 1 >= 3:
+        return token[:-1]
+    return token
+
+
 def _overlap_score(
     query_tokens: set[str],
     sentence: str,
@@ -61,7 +88,13 @@ def _overlap_score(
 
     weight = idf if idf is not None else (lambda _t: 1.0)
 
-    matched = query_tokens & sent_tokens
+    # Matching is stem-based so "disease"/"diseases" and "cover"/"covered"
+    # count as the same term; weighting still uses each side's own surface
+    # form (`weight` is keyed by exact tokens from the BM25 index), so this
+    # only changes what counts as matched, not how a match is priced.
+    query_by_stem = {_stem(t): t for t in query_tokens}
+    sent_stems = {_stem(t) for t in sent_tokens}
+    matched = {query_by_stem[s] for s in query_by_stem if s in sent_stems}
     if not matched:
         return 0.0
 
