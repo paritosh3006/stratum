@@ -1,0 +1,20 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "stratum: run against mock",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "stratum.cli",
+      "args": [
+        "run",
+        "--endpoint", "examples/mock_endpoint.py:endpoint",
+        "--dataset", "datasets/demo.jsonl",
+        "--glossary", "datasets/glossary.json",
+        "--out", "reports/dev"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}

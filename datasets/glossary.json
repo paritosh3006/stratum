@@ -1,0 +1,21 @@
+{
+  "terms": {
+    "premium": {
+      "hi-Deva": ["प्रीमियम"],
+      "hi-Latn": ["premium"],
+      "ta-Taml": ["பிரீமியம்"],
+      "en": ["premium"]
+    },
+    "policy": {
+      "hi-Deva": ["पॉलिसी"],
+      "ta-Taml": ["பாலிசி"],
+      "en": ["policy"]
+    }
+  },
+  "forbidden": {
+    "premium": {
+      "hi-Deva": ["बीमा किस्त", "शुल्क"],
+      "ta-Taml": ["கட்டணம்"]
+    }
+  }
+}

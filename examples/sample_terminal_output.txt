@@ -1,0 +1,67 @@
+stratum · system-under-test
+100 items · 4 language variants · passes: standard, oracle_query, oracle_context, oracle_answer
+
+  LANGUAGE           QUALITY   Δ vs baseline           STATUS
+  en              92.0 ±10.0   —                       baseline
+  hi-Deva         78.0 ±15.0   -14.0 [-26.0,-4.0]      OVER TARGET
+  hi-Latn         88.0 ±14.0   -4.0 [-12.0,+0.0]       indistinguishable
+  ta-Taml         73.0 ±12.8   -19.0 [-29.0,-10.0]     OVER TARGET · experimental
+
+  n per language: en=25, hi-Deva=25, hi-Latn=25, ta-Taml=25
+
+  WHERE THE QUALITY WENT
+
+  hi-Deva · +14.0 points vs en
+
+    baseline                             92.0
+    Input + query processing            -13.0  ████████████████████████████   <- 93% of loss
+    Retrieval                               —   not measured
+    Generation                              —   not measured
+    Output rendering                     -1.0  ██  [noise]
+    final                                78.0
+
+    ! some stages are not measurable without a judge; the remaining rungs absorb their share and are upper bounds
+    ! indistinguishable from zero at this sample size: Retrieval, Generation, Output rendering
+
+  hi-Latn · +4.0 points vs en
+
+    baseline                             92.0
+    Input + query processing             -4.0  ████████████████████████████  [noise]
+    Retrieval                               —   not measured
+    Generation                              —   not measured
+    Output rendering                     -0.0    [noise]
+    final                                88.0
+
+    ! some stages are not measurable without a judge; the remaining rungs absorb their share and are upper bounds
+    ! indistinguishable from zero at this sample size: Input + query processing, Retrieval, Generation, Output rendering
+
+  ta-Taml · +19.0 points vs en
+
+    baseline                             92.0
+    Input + query processing             -3.0  █████  [noise]
+    Retrieval                               —   not measured
+    Generation                              —   not measured
+    Output rendering                    -16.0  ████████████████████████████   <- 84% of loss
+    final                                73.0
+
+    ! some stages are not measurable without a judge; the remaining rungs absorb their share and are upper bounds
+    ! indistinguishable from zero at this sample size: Input + query processing, Retrieval, Generation
+
+  FAILURE CLASSES
+    retrieval_miss                58
+    script_misdetection           25
+    missed_refusal                11
+    terminology_drift             10
+    over_refusal                   4
+    numeral_error                  2
+    placeholder_corruption         2
+
+  GATES
+    . placeholder_integrity         pass  (experimental languages excluded)
+    . numeral_integrity             pass  (experimental languages excluded)
+    x language_detection            hi-Latn 0.0  (required 90)
+    . glossary_adherence            pass  (experimental languages excluded)
+
+  RUN FAILED
+
+  report -> reports/latest/report.json
