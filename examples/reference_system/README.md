@@ -15,10 +15,15 @@ python examples/reference_system/eval/build_dataset.py
 stratum run \
   --endpoint examples/reference_system/endpoint.py:endpoint \
   --dataset examples/reference_system/eval/insurance.jsonl \
-  --glossary examples/reference_system/eval/glossary.json \
   --verified "en,hi-Deva,hi-Latn" \
   --out reports/ref-001
 ```
+
+No `--glossary` flag: `endpoint.py` declares a module-level `glossary`
+(`render.glossary.build_glossary()`, the same `eval/glossary.json` the
+renderer enforces against), and `stratum run` picks that up on its own —
+see cli.py's `_load_endpoint`. Pass `--glossary` only to override it with a
+different file.
 
 No downloads. The default embedder is a deterministic character-ngram hasher, and
 script detection / transliteration / translation default to no-download stubs, so
@@ -218,7 +223,7 @@ split as everywhere else in this codebase:
 | Translation, en → hi-Deva | IndicTrans2 (en-indic) | hand-built lexicon, written from general insurance vocabulary, not scanned from `build_dataset.py` |
 | Romanization, hi-Deva → hi-Latn | `indic_transliteration` (ITRANS scheme) | character-table Devanagari → Roman |
 | Placeholder / numeral integrity | — | mask before translation, restore after (verbatim for placeholders, Indian-grouped for numerals) |
-| Glossary enforcement | — | `eval/glossary.json`, the same file `stratum run --glossary` scores against |
+| Glossary enforcement | — | `eval/glossary.json`, the same file `endpoint.py` exposes to `stratum run` |
 
 Two new corpus sentences (`policy_network_claims.md`'s "Claim status
 notifications" section) carry genuine `{placeholder}` tokens — an SMS and an
@@ -252,7 +257,8 @@ now takes the query as well as the answer (`render/glossary.py`,
 already-documented hi-Latn over-refusal issue above, not an enforcement gap
 — confirmed by checking that every remaining failure's output is empty.
 
-Re-running with S4 wired in, `--glossary` passed, and the two new items:
+Re-running with S4 wired in and the two new items — no `--glossary` flag
+needed; see "Where the glossary lives" below:
 
 | Language | Placeholder integrity | Glossary adherence | Quality |
 |---|---|---|---|
@@ -270,3 +276,36 @@ answer that's empty. That over-refusal is the same S1 coverage gap
 documented above, not a new S4 problem — fixing it means improving
 `SelectiveTransliterator`'s marker coverage or the S1 lexicon, not the
 renderer.
+
+## Where the glossary lives, and a gate bug it exposed
+
+`eval/glossary.json` is the one glossary — `render/glossary.py` loads it for
+the renderer's own term enforcement, and `endpoint.py` exposes it at module
+level (`glossary = build_glossary()`) so `stratum run` picks it up on its
+own (`cli.py`'s `_load_endpoint` now returns the module, not just the
+endpoint, and `run` reads `module.glossary` when `--glossary` isn't passed
+explicitly). `--glossary` still works, as an override — useful for scoring
+against a different term list without touching the endpoint — but the
+reference system no longer depends on the caller remembering it.
+
+Before `endpoint.py` exposed its own glossary, running without the
+`--glossary` flag — the easy mistake this section exists to prevent —
+meant `glossary_adherence` had zero observations for every language (no
+glossary loaded means the metric is never computed, `n=0`), and the gate
+still printed `pass`.
+
+The bug was in `Report.evaluate_gates` (`stratum/report.py`): the loop
+initializes `passed = True` and only ever sets it `False` inside the branch
+that runs when a value *was* observed and failed the threshold. A metric
+that is `None` for every in-scope language never enters that branch, so
+`passed` never moves off its default — the gate reports "pass" having
+never actually been evaluated. `evaluate_gates` now tracks whether *any*
+value was observed at all; if not, the gate is marked `skipped_reason:
+"no observations for this metric — cannot evaluate"` and, by default
+(`fail_on_unevaluated=True`, also exposed as `stratum run
+--fail-on-unevaluated/--no-fail-on-unevaluated`), that counts as a failure
+rather than a pass — the same principle `attribution.py` already applies
+to cascade stages a judge-free run can't measure: an honest "didn't run" is
+worse to hide than to report as a problem. `tests/test_report.py` covers
+both the missing-key and present-but-`n=0` shapes a real Estimate can take,
+plus that gates with real data are unaffected.

@@ -17,20 +17,28 @@ app = typer.Typer(add_completion=False, help="Evaluate multilingual RAG, per sta
 
 
 def _load_endpoint(spec: str):
-    """Load `path/to/file.py:attr`."""
+    """Load `path/to/file.py:attr`. Returns the module too, not just the
+    endpoint attribute — `run` uses it to look for a `glossary` an endpoint
+    declares alongside itself, so a system whose rendering is checked
+    against a specific glossary doesn't depend on the caller remembering to
+    pass `--glossary` separately and keep it in sync."""
     path, _, attr = spec.partition(":")
     attr = attr or "endpoint"
     mod_spec = importlib.util.spec_from_file_location("_stratum_ep", path)
     module = importlib.util.module_from_spec(mod_spec)          # type: ignore[arg-type]
     mod_spec.loader.exec_module(module)                          # type: ignore[union-attr]
-    return getattr(module, attr)
+    return module, getattr(module, attr)
 
 
 @app.command()
 def run(
     endpoint: str = typer.Option(..., help="module.py:attr exposing an Endpoint"),
     dataset: Path = typer.Option(..., exists=True),
-    glossary: Path = typer.Option(None, exists=True),
+    glossary: Path = typer.Option(
+        None, exists=True,
+        help="overrides any glossary the endpoint module declares via a "
+             "module-level `glossary` attribute",
+    ),
     baseline: str = typer.Option("en"),
     k: int = typer.Option(5),
     out: Path = typer.Option(None, help="directory for report.json"),
@@ -41,12 +49,26 @@ def run(
              "has checked; all others are reported as experimental and excluded "
              "from gates",
     ),
+    fail_on_unevaluated: bool = typer.Option(
+        True,
+        help="a gate whose metric was never observed (e.g. glossary_adherence "
+             "with no --glossary loaded) fails the run instead of silently "
+             "passing; disable only if that metric is deliberately not gated "
+             "this run",
+    ),
 ):
     ds = Dataset.from_jsonl(dataset)
-    gl = Glossary.from_dict(json.loads(glossary.read_text())) if glossary else None
+    module, ep = _load_endpoint(endpoint)
+
+    if glossary:
+        gl = Glossary.from_dict(json.loads(glossary.read_text()))
+    else:
+        # Not every endpoint declares one — a system with no rendering
+        # stage has nothing to check terminology against, and that's fine.
+        gl = getattr(module, "glossary", None)
 
     harness = Harness(
-        endpoint=_load_endpoint(endpoint),
+        endpoint=ep,
         dataset=ds,
         baseline_language=baseline,
         glossary=gl,
@@ -60,7 +82,7 @@ def run(
         Gate(metric="numeral_integrity", languages="all", min_absolute=95.0),
         Gate(metric="language_detection", languages="all", min_absolute=90.0),
         Gate(metric="glossary_adherence", languages="all", min_absolute=85.0),
-    ])
+    ], fail_on_unevaluated=fail_on_unevaluated)
 
     typer.echo(report.render_terminal())
 

@@ -76,7 +76,23 @@ class Report(BaseModel):
     cascade_objects: list = Field(default_factory=list, exclude=True, repr=False)
 
     # ------------------------------------------------------------------
-    def evaluate_gates(self, gates: list[Gate]) -> "Report":
+    def evaluate_gates(
+        self, gates: list[Gate], *, fail_on_unevaluated: bool = True
+    ) -> "Report":
+        """Check every gate's metric against its threshold.
+
+        A gate whose metric was never observed — every in-scope language's
+        value is `None`, `n == 0` (glossary_adherence with no glossary
+        loaded is the case that motivated this), or no language matched
+        `gate.languages` at all — has nothing to pass or fail on. The
+        default (`fail_on_unevaluated=True`) treats that as a failure: a
+        gate that silently reports "pass" because it was never actually run
+        is worse than one that is honest about not having run, the same
+        principle `attribution.py` applies to unmeasurable cascade stages.
+        Pass `fail_on_unevaluated=False` to instead let it pass with a
+        `skipped_reason`, for callers that genuinely don't want that metric
+        gated in this run.
+        """
         evaluated: list[Gate] = []
         for gate in gates:
             langs = (
@@ -84,22 +100,33 @@ class Report(BaseModel):
                 if gate.languages == "all"
                 else list(gate.languages)
             )
-            worst_val, worst_lang, passed, skipped = None, None, True, None
+            worst_val, worst_lang, passed = None, None, True
+            experimental_excluded = False
+            observed_any = False
 
             for lr in self.languages:
                 if lr.language not in langs:
                     continue
                 if not lr.verified:
                     # Experimental languages inform, they do not block.
-                    skipped = "experimental languages excluded"
+                    experimental_excluded = True
                     continue
                 val = lr.metric_value(gate.metric)
                 if val is None:
                     continue
+                observed_any = True
                 if gate.min_absolute is not None and val < gate.min_absolute:
                     passed = False
                     if worst_val is None or val < worst_val:
                         worst_val, worst_lang = val, lr.language
+
+            if not observed_any:
+                skipped = "no observations for this metric — cannot evaluate"
+                passed = not fail_on_unevaluated
+            elif experimental_excluded:
+                skipped = "experimental languages excluded"
+            else:
+                skipped = None
 
             evaluated.append(gate.model_copy(update={
                 "observed": worst_val,
@@ -197,6 +224,11 @@ class Report(BaseModel):
                 if g.passed:
                     note = f"  ({g.skipped_reason})" if g.skipped_reason else ""
                     L.append(f"    . {g.metric:<30}pass{note}")
+                elif g.observed is None:
+                    # Failed with nothing observed: evaluate_gates's
+                    # fail_on_unevaluated turned a never-run gate into a
+                    # failure rather than letting it pass by default.
+                    L.append(f"    x {g.metric:<30}SKIPPED — {g.skipped_reason}")
                 else:
                     L.append(
                         f"    x {g.metric:<30}"
