@@ -1,0 +1,52 @@
+{
+  "calibrations": [
+    {
+      "language": "en",
+      "metric": "faithfulness",
+      "kappa": -0.054054054054053946,
+      "n_labelled": 12,
+      "judge_id": "ollama:qwen2.5:7b",
+      "threshold": 0.6
+    },
+    {
+      "language": "en",
+      "metric": "answer_correctness",
+      "kappa": 0.8695652173913043,
+      "n_labelled": 12,
+      "judge_id": "ollama:qwen2.5:7b",
+      "threshold": 0.6
+    },
+    {
+      "language": "hi-Deva",
+      "metric": "faithfulness",
+      "kappa": 0.08780487804878045,
+      "n_labelled": 11,
+      "judge_id": "ollama:qwen2.5:7b",
+      "threshold": 0.6
+    },
+    {
+      "language": "hi-Deva",
+      "metric": "answer_correctness",
+      "kappa": 0.5217391304347827,
+      "n_labelled": 11,
+      "judge_id": "ollama:qwen2.5:7b",
+      "threshold": 0.6
+    },
+    {
+      "language": "hi-Latn",
+      "metric": "faithfulness",
+      "kappa": 0.25,
+      "n_labelled": 6,
+      "judge_id": "ollama:qwen2.5:7b",
+      "threshold": 0.6
+    },
+    {
+      "language": "hi-Latn",
+      "metric": "answer_correctness",
+      "kappa": 0.2941176470588236,
+      "n_labelled": 6,
+      "judge_id": "ollama:qwen2.5:7b",
+      "threshold": 0.6
+    }
+  ]
+}
