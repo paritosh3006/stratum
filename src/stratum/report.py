@@ -72,6 +72,21 @@ class Report(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     gates: list[Gate] = Field(default_factory=list)
 
+    #: `Calibration.as_dict()` entries for every (language, metric) a
+    #: CalibrationRegistry carried this run, trustworthy or not — the html
+    #: report's calibration table needs to show a language that *was*
+    #: calibrated and missed the threshold, not just the ones that passed.
+    calibrations: list[dict] = Field(default_factory=list)
+
+    #: Run provenance, set by the CLI after the run (Harness doesn't know
+    #: its own invocation's file paths or flags). All optional: a report
+    #: built directly against the library rather than through `stratum run`
+    #: simply won't carry them, the same graceful absence as an unset
+    #: `gold_answer` leaving a metric unmeasured rather than guessed at.
+    config_hash: str | None = None
+    dataset_hash: str | None = None
+    model_versions: dict[str, str] = Field(default_factory=dict)
+
     #: Cascade objects kept out of serialisation; the dicts above are the contract.
     cascade_objects: list = Field(default_factory=list, exclude=True, repr=False)
 

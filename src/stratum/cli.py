@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
+import warnings as _warnings
 from pathlib import Path
 
 import typer
@@ -13,7 +15,7 @@ from .dataset import Dataset
 from .metrics.s4_rendering import Glossary
 from .harness import Harness
 from .judges import CalibrationRegistry, get_judge
-from .report import Gate
+from .report import Gate, Report
 
 app = typer.Typer(add_completion=False, help="Evaluate multilingual RAG, per stage.")
 
@@ -69,33 +71,65 @@ def run(
              "passing; disable only if that metric is deliberately not gated "
              "this run",
     ),
+    html: bool = typer.Option(
+        False, help="also write report.html next to report.json — requires --out"
+    ),
 ):
-    ds = Dataset.from_jsonl(dataset)
-    module, ep = _load_endpoint(endpoint)
+    if html and not out:
+        typer.echo("--html needs --out, so there's somewhere to write report.html", err=True)
+        raise typer.Exit(2)
 
-    if glossary:
-        gl = Glossary.from_dict(json.loads(glossary.read_text()))
-    else:
-        # Not every endpoint declares one — a system with no rendering
-        # stage has nothing to check terminology against, and that's fine.
-        gl = getattr(module, "glossary", None)
+    # Endpoint construction and the run itself may raise plain Python
+    # warnings.warn() — LexiconTranslator's train-on-test disclosure
+    # (query/translate.py) is exactly this, firing at import time when the
+    # endpoint module builds its pipeline, well before Harness.run() exists
+    # to catch anything. Capturing at this outer scope is what lets the
+    # html report's trust panel surface a caveat like that generically,
+    # without stratum core knowing any specific endpoint's internals.
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
 
-    jb = get_judge(judge) if judge else None
-    cal_registry = (
-        calibration_mod.load_registry(calibration) if calibration else CalibrationRegistry()
-    )
+        ds = Dataset.from_jsonl(dataset)
+        module, ep = _load_endpoint(endpoint)
 
-    harness = Harness(
-        endpoint=ep,
-        dataset=ds,
-        baseline_language=baseline,
-        glossary=gl,
-        k=k,
-        judge=jb,
-        calibration=cal_registry,
-        verified_languages=[v.strip() for v in verified.split(",")] if verified else None,
-    )
-    report = harness.run(system_label=label)
+        if glossary:
+            gl = Glossary.from_dict(json.loads(glossary.read_text()))
+        else:
+            # Not every endpoint declares one — a system with no rendering
+            # stage has nothing to check terminology against, and that's fine.
+            gl = getattr(module, "glossary", None)
+
+        jb = get_judge(judge) if judge else None
+        cal_registry = (
+            calibration_mod.load_registry(calibration) if calibration else CalibrationRegistry()
+        )
+
+        harness = Harness(
+            endpoint=ep,
+            dataset=ds,
+            baseline_language=baseline,
+            glossary=gl,
+            k=k,
+            judge=jb,
+            calibration=cal_registry,
+            verified_languages=[v.strip() for v in verified.split(",")] if verified else None,
+        )
+        report = harness.run(system_label=label)
+
+    for w in caught:
+        msg = str(w.message)
+        if msg not in report.warnings:
+            report.warnings.append(msg)
+
+    report.dataset_hash = hashlib.sha256(dataset.read_bytes()).hexdigest()[:12]
+    report.config_hash = hashlib.sha256(json.dumps({
+        "endpoint": endpoint, "baseline": baseline, "k": k, "judge": judge,
+        "glossary": str(glossary) if glossary else None,
+        "calibration": str(calibration) if calibration else None,
+        "verified": verified,
+    }, sort_keys=True).encode()).hexdigest()[:12]
+    if jb is not None:
+        report.model_versions["judge"] = jb.judge_id
 
     report.evaluate_gates([
         Gate(metric="placeholder_integrity", languages="all", min_absolute=100.0),
@@ -110,7 +144,36 @@ def run(
         path = report.save(out)
         typer.echo(f"\n  report -> {path}")
 
+        if html:
+            from . import html_report
+            history = html_report.scan_report_history(out.parent, exclude=out)
+            html_path = html_report.write_html(report, out / "report.html", history=history)
+            typer.echo(f"  html   -> {html_path}")
+
     raise typer.Exit(1 if report.status == "failed" else 0)
+
+
+@app.command()
+def html(
+    report_json: Path = typer.Argument(..., exists=True, help="an existing report.json"),
+    out: Path = typer.Option(
+        None, help="defaults to report.html next to report_json"
+    ),
+    reports_dir: Path = typer.Option(
+        None,
+        help="directory of sibling reports/*/report.json to read for the "
+             "run-history strip; defaults to report_json's parent directory",
+    ),
+):
+    """Regenerate report.html from an existing report.json — no rerun needed."""
+    from . import html_report
+
+    report = Report.model_validate_json(report_json.read_text(encoding="utf-8"))
+    reports_dir = reports_dir or report_json.parent.parent
+    history = html_report.scan_report_history(reports_dir, exclude=report_json.parent)
+    out = out or report_json.with_name("report.html")
+    path = html_report.write_html(report, out, history=history)
+    typer.echo(f"  html -> {path}")
 
 
 _RUBRIC_HINT = {

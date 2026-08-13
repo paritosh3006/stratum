@@ -188,6 +188,7 @@ class Harness:
             failures=[f for r in standard for f in r.failures],
             warnings=warnings,
             cascade_objects=cascades,
+            calibrations=[c.as_dict() for c in self.calibration.records.values()],
         )
 
     # ------------------------------------------------------------------
