@@ -124,17 +124,27 @@ Cohen's κ is printed next to every judged metric in the report. If κ < 0.6 for
 
 Every other test in this repo checks that stratum computes its documented formulas correctly. `tests/test_validation.py` checks the harder claim: given a system with a real, known defect at a known stage, does the cascade actually attribute failure *there*.
 
-It builds 20 synthetic RAG systems — one defect mechanism (S0 language misroute, S1 degraded translation, S2 wrong-chunk retrieval, S4 rendering corruption) at 5 severities each, against a fixed synthetic dataset with a real, calibrated judge (Cohen's κ = 1.0 for `answer_correctness` on the synthetic language) unlocking S2 attribution. Ground truth is known by construction, so `dominant_stage` can be checked exactly rather than eyeballed:
+Defects are injected by mechanism — S0 language misroute, S1 degraded translation, S2 wrong-chunk retrieval, S4 rendering corruption — into synthetic RAG systems with known ground truth, so `dominant_stage` can be checked exactly rather than eyeballed. A second suite sweeps *how small a defect stratum still reliably catches*, since a tool only proven on obvious failures hasn't proven much:
 
-**On 20 controlled synthetic systems, Stratum identified the injected dominant failure stage in 20/20 cases.**
+**Smallest injected-stage loss magnitude Stratum reliably attributes (≥ 80% correct, measured, non-noise), by dataset size:**
 
-That number is a floor the test asserts (≥ 80%), not a target it was tuned to hit — reproduce it with `pytest tests/test_validation.py -s`. The defects are deliberately large (whole wrong-item swaps, numeral corruption far outside any real value), so a clean sweep is the expected outcome for defects this size, not evidence the ladder resolves subtler ones.
+| Paired items (n) | Smallest reliably-attributed loss |
+|---|---|
+| 20 | ~20 points |
+| 50 | ~5 points |
+| 100 | ~5 points |
+
+More data resolves smaller defects — a 20-item dataset only reliably names the stage behind a ~20-point loss, where 50 and 100 items both get there at ~5 points (100 items shows a further partial edge at ~2 points that 50 doesn't, just not enough to clear the 80% bar). Reproduce with `pytest tests/test_validation.py -k sensitivity -s`.
+
+As a secondary, easier check: on 20 large, obvious synthetic defects (whole wrong-item swaps, numeral corruption far outside any real value, at 60-100% severity), **Stratum identified the injected dominant failure stage in 20/20 cases** — the floor the original test asserts, not evidence the ladder resolves subtler defects; that's what the sensitivity sweep above is for. Reproduce with `pytest tests/test_validation.py -k 20_synthetic_systems -s`.
+
+**Both numbers describe controlled, synthetic defects on a synthetic dataset — a sensitivity floor for the attribution *method*, not a guarantee about what any particular real-world system's real defects will look like or how small a real regression this will catch.**
 
 What the suite is honest about rather than glossing over:
 
 - **S0 and S1 are graded as one combined stage**, `s0_s1_input_query`, because that's all the ladder can isolate — there's no oracle pass that repairs one without the other. Both injection mechanisms above are scored against that combined key, never against a nonexistent S0-only or S1-only rung.
-- **S2 and S3 are unconditionally unmeasurable without a calibrated judge**, even when a deterministic check would incidentally catch the defect. A second test confirms the fallback is honest: an uncalibrated S2 run reports the stage as `not measured`, never guesses, and never lets a "not measured" result count as a correct attribution.
-- **Faithfulness doesn't calibrate for retrieval defects** — a wrong-chunk answer is still faithful to the (wrong) chunk it came from, so faithfulness can't see a retrieval failure. `answer_correctness`, scored against the true external reference regardless of which context was supplied, is the metric that actually detects S2 — and the one this suite calibrates.
+- **S2 and S3 are unconditionally unmeasurable without a calibrated judge**, even when a deterministic check would incidentally catch the defect. A dedicated test confirms the fallback is honest: an uncalibrated S2 run reports the stage as `not measured`, never guesses, and neither `not measured` nor `noise` is ever counted as a correct attribution anywhere in this suite, at any dataset size.
+- **Faithfulness doesn't calibrate for retrieval defects** — a wrong-chunk answer is still faithful to the (wrong) chunk it came from, so faithfulness can't see a retrieval failure. `answer_correctness`, scored against the true external reference regardless of which context was supplied, is the metric that actually detects S2 — and the one this suite calibrates, freshly, at each dataset size.
 - **S3 is not defect-injected** in this suite at all (out of scope for this pass); its shared judge-dependency with S2 is noted, not tested.
 
 ---

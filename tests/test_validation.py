@@ -44,6 +44,20 @@ Design, end to end:
   - S3 is not defect-injected at all (out of scope per the brief) but its
     same judge-dependency is noted in the reported limitations, since a
     reader of the accuracy report needs to know it exists.
+
+  - The 20-system suite above uses deliberately large defects (whole-item
+    swaps, ~9000-magnitude numeral corruption) at severities of 60-100% of
+    the dataset, so a clean sweep there only proves stratum handles the
+    *obvious* case. The sensitivity sweep below (`_run_sensitivity_sweep`)
+    asks the sharper question: at graduated *target loss magnitudes*
+    (~2/5/10/20 points) and dataset sizes (n=20/50/100 paired items), what
+    is the smallest defect stratum reliably attributes? Severity here maps
+    to a target magnitude via a measured, not assumed, linear relationship
+    — loss scales linearly in the fraction of affected items because the
+    synthetic items are homogeneous by construction (interchangeable
+    effect size per item), verified empirically before relying on it: a
+    2-item defect on a 100-item S0 system measured 1.2 points against a
+    60.0-point measurement at 100% severity, exactly 60.0 x (2/100).
 """
 
 from __future__ import annotations
@@ -104,7 +118,14 @@ def _build_items(n_pairs: int = N_PAIRS) -> list[SynthItem]:
     items = []
     for i in range(n_pairs):
         numeral = str(1000 + i)  # 4-digit, no accidental substring overlap
-        topic = _TOPICS[i % len(_TOPICS)]
+        # The index suffix (not just cycling through _TOPICS) keeps every
+        # item's topic token unique regardless of n_pairs — the sensitivity
+        # sweep below builds datasets up to n=100, well past len(_TOPICS),
+        # and a repeated bare topic word ("battery" at item 0 *and* item
+        # 15) would reintroduce the same partial token-overlap problem the
+        # index-free version had, just at a smaller scale (F1=0.5 instead
+        # of 0.71 — still enough to miss StubJudge's "else -> 0.0" bucket).
+        topic = f"{_TOPICS[i % len(_TOPICS)]}{i}"
         items.append(SynthItem(
             parallel_id=f"p{i:02d}",
             index=i,
@@ -150,14 +171,25 @@ def _build_dataset(items: list[SynthItem]) -> Dataset:
 ITEMS = _build_items()
 DATASET = _build_dataset(ITEMS)
 BY_INDEX = {it.index: it for it in ITEMS}
-#: For the test harness's own bookkeeping only — "which item is this
-#: request about" — resolvable from either query form. NOT the "did the
-#: endpoint understand this query" signal: that must come from comparing
-#: against `EN_QUERIES` specifically, since a lookup that already contains
-#: the xx-language form would make "understood" trivially true and defeat
-#: the entire point of the S0/S1 defect check.
-BY_QUERY = {it.query_en: it for it in ITEMS} | {it.query_xx: it for it in ITEMS}
-EN_QUERIES = {it.query_en for it in ITEMS}
+
+
+def _lookups(items: list[SynthItem]) -> tuple[dict[str, "SynthItem"], set[str]]:
+    """Per-`items`-list bookkeeping, built fresh from whatever item set an
+    endpoint factory is actually given — never from a module-level
+    constant. The sensitivity sweep below calls these factories with
+    differently-sized item lists (n=20/50/100, not just the fixed 10-item
+    ITEMS); a closure over a single global item set would silently resolve
+    every query against the wrong dataset the moment sizes diverge.
+
+    Returns (by_query, en_queries): `by_query` resolves either query form
+    to "which item is this about" for response bookkeeping; `en_queries`
+    is the actual "did the endpoint understand this query" signal — only
+    the gold English form counts, so it must stay a strict subset of
+    `by_query`'s keys, never conflated with it.
+    """
+    by_query = {it.query_en: it for it in items} | {it.query_xx: it for it in items}
+    en_queries = {it.query_en for it in items}
+    return by_query, en_queries
 
 
 def _affected_parallel_ids(items: list[SynthItem], severity: float, seed: int) -> set[str]:
@@ -190,12 +222,13 @@ def _wrong_numeral(numeral: str) -> str:
 def _make_s0_endpoint(items: list[SynthItem], severity: float, seed: int) -> CallableEndpoint:
     affected = _affected_parallel_ids(items, severity, seed)
     by_chunk = {it.chunk_id: it for it in items}
+    by_query, en_queries = _lookups(items)
 
     def rag(query, language, *, context_chunk_ids=None, answer_override=None):
         # Bookkeeping only — which item this request is *about*, so the
         # response can be constructed. Not the "did the endpoint understand
-        # this query" signal; see EN_QUERIES below for that.
-        it = BY_QUERY.get(query) or items[0]
+        # this query" signal; see en_queries below for that.
+        it = by_query.get(query) or items[0]
 
         if context_chunk_ids is not None:
             target = by_chunk.get(context_chunk_ids[0], it)
@@ -211,7 +244,7 @@ def _make_s0_endpoint(items: list[SynthItem], severity: float, seed: int) -> Cal
         # xx-language query — real input, in the standard pass — does not,
         # by construction, regardless of whether a lookup could resolve it
         # for bookkeeping purposes.
-        understood = query in EN_QUERIES
+        understood = query in en_queries
         defective = it.parallel_id in affected
 
         if language == BASELINE or not defective or understood:
@@ -239,9 +272,10 @@ def _make_s0_endpoint(items: list[SynthItem], severity: float, seed: int) -> Cal
 def _make_s1_endpoint(items: list[SynthItem], severity: float, seed: int) -> CallableEndpoint:
     affected = _affected_parallel_ids(items, severity, seed)
     by_chunk = {it.chunk_id: it for it in items}
+    by_query, _ = _lookups(items)
 
     def rag(query, language, *, context_chunk_ids=None, answer_override=None):
-        it = BY_QUERY.get(query) or items[0]
+        it = by_query.get(query) or items[0]
 
         if context_chunk_ids is not None:
             target = by_chunk.get(context_chunk_ids[0], it)
@@ -282,9 +316,10 @@ def _make_s1_endpoint(items: list[SynthItem], severity: float, seed: int) -> Cal
 def _make_s2_endpoint(items: list[SynthItem], severity: float, seed: int) -> CallableEndpoint:
     affected = _affected_parallel_ids(items, severity, seed)
     by_chunk = {it.chunk_id: it for it in items}
+    by_query, _ = _lookups(items)
 
     def rag(query, language, *, context_chunk_ids=None, answer_override=None):
-        it = BY_QUERY.get(query) or items[0]
+        it = by_query.get(query) or items[0]
 
         if context_chunk_ids is not None:
             # oracle_context+ hands the gold chunk directly — retrieval is
@@ -324,9 +359,10 @@ def _make_s2_endpoint(items: list[SynthItem], severity: float, seed: int) -> Cal
 def _make_s4_endpoint(items: list[SynthItem], severity: float, seed: int) -> CallableEndpoint:
     affected = _affected_parallel_ids(items, severity, seed)
     by_chunk = {it.chunk_id: it for it in items}
+    by_query, _ = _lookups(items)
 
     def rag(query, language, *, context_chunk_ids=None, answer_override=None):
-        it = BY_QUERY.get(query) or items[0]
+        it = by_query.get(query) or items[0]
         if context_chunk_ids is not None:
             it = by_chunk.get(context_chunk_ids[0], it)
 
@@ -357,10 +393,10 @@ def _make_s4_endpoint(items: list[SynthItem], severity: float, seed: int) -> Cal
 # synthetic defect would show up deterministically (see module docstring).
 # ---------------------------------------------------------------------------
 
-BY_PID = {it.parallel_id: it for it in ITEMS}
-
-
-def _calibrate_s2_judge() -> CalibrationRegistry:
+def _calibrate_s2_judge(
+    items: list[SynthItem] | None = None,
+    dataset: Dataset | None = None,
+) -> CalibrationRegistry:
     """Real calibration via the real pipeline (sample -> judge -> kappa),
     not an asserted trust score. Uses a mid-severity S2 endpoint
     specifically so the label set has genuine right/wrong variance — an
@@ -373,18 +409,29 @@ def _calibrate_s2_judge() -> CalibrationRegistry:
     legitimate substitute for hand-labelling *here* and nowhere else. Real
     calibration against a real system needs a real human; see
     calibrate.py / `stratum calibrate`.
+
+    Takes explicit `items`/`dataset` (defaulting to the fixed 10-item
+    ITEMS/DATASET) rather than closing over the module-level ones, because
+    the sensitivity sweep calibrates separately for each sample size —
+    reusing a calibration measured on a 10-item dataset against a 100-item
+    sweep would be exactly the kind of unverified reuse this suite is
+    supposed to avoid.
     """
     from stratum.calibrate import build_candidates
 
+    items = ITEMS if items is None else items
+    dataset = DATASET if dataset is None else dataset
+    by_pid = {it.parallel_id: it for it in items}
+
     judge = StubJudge()
-    endpoint = _make_s2_endpoint(ITEMS, severity=0.5, seed=99)
-    harness = Harness(endpoint, DATASET, baseline_language=BASELINE)
-    xx_items = [i for i in DATASET if i.language == SYNTH_LANG]
+    endpoint = _make_s2_endpoint(items, severity=0.5, seed=99)
+    harness = Harness(endpoint, dataset, baseline_language=BASELINE)
+    xx_items = [i for i in dataset if i.language == SYNTH_LANG]
 
     candidates = build_candidates(harness, xx_items, judge)
     records: list[LabelRecord] = []
     for c in candidates:
-        it = BY_PID[c.item.parallel_id]
+        it = by_pid[c.item.parallel_id]
         human = 3 if c.response.answer.strip() == it.answer.strip() else 0
         if c.judge_faithfulness is not None:
             records.append(LabelRecord(
@@ -618,3 +665,205 @@ def test_s2_without_judge_calibration_is_expected_not_measured() -> None:
     # Dominant must never quietly become S2 when S2 cannot be measured —
     # either a genuinely measured stage takes it, or nothing does.
     assert cascade.dominant is None or cascade.dominant.stage != S2
+
+
+# ---------------------------------------------------------------------------
+# Sensitivity sweep: graduated target loss magnitudes x dataset sizes.
+#
+# The 20-system suite above only shows stratum handles large, obvious
+# defects. This asks a harder question: how small a defect does it still
+# reliably attribute, and does that answer depend on how much data the run
+# has to work with. Same four mechanisms, same combined-S0/S1 and
+# judge-dependent-S2 honesty rules — just parameterised by target loss
+# magnitude and sample size instead of a fixed severity list.
+# ---------------------------------------------------------------------------
+
+#: Approximate points of loss at the injected stage to aim for. "Approximate"
+#: because the achievable severity is quantised to whole affected items
+#: (round(fraction * n)), so small n can't always land exactly on a small
+#: target — the achieved value is measured and reported alongside the
+#: target, never assumed to equal it.
+TARGET_LOSSES: tuple[float, ...] = (2.0, 5.0, 10.0, 20.0)
+
+#: Paired-item counts to sweep. Larger n gives finer severity granularity
+#: (1/100 vs 1/20 of the dataset per affected item), which is exactly the
+#: variable this sweep exists to test the effect of.
+SWEEP_SAMPLE_SIZES: tuple[int, ...] = (20, 50, 100)
+
+#: "Reliably attributes" per the brief: at least this fraction of
+#: mechanisms correctly attributed at a given (n, target loss) cell, with
+#: the injected stage actually measured and non-noise (enforced by
+#: `SweepOutcome.correct` below, not a separate check).
+RELIABLE_THRESHOLD = 0.8
+
+
+@dataclass(frozen=True)
+class SweepOutcome:
+    n: int
+    mechanism: str
+    expected_stage: str
+    target_loss: float
+    achieved_loss: float | None
+    n_affected: int
+    severity: float
+    seed: int
+    dominant_stage: str | None
+    measured: bool
+    noise: bool
+
+    @property
+    def correct(self) -> bool:
+        return self.dominant_stage == self.expected_stage
+
+
+def _severity_for_target(target: float, max_loss: float, n: int) -> tuple[float, int]:
+    """The (severity, n_affected) pair whose expected loss is closest to
+    `target`, given the measured max_loss at 100% severity for this
+    mechanism/n. Loss is linear in the affected fraction (see module
+    docstring), so this is a direct scale-down, not a search — clamped to
+    at least 1 affected item (a defect nobody exhibits isn't a defect) and
+    at most n (can't affect more items than exist).
+    """
+    if max_loss <= 0:
+        return 1.0, n
+    fraction = target / max_loss
+    n_affected = max(1, min(n, round(fraction * n)))
+    return n_affected / n, n_affected
+
+
+def _sweep_max_loss(
+    factory, items: list[SynthItem], dataset: Dataset, judge, calibration,
+    expected_stage: str, seed: int,
+) -> float:
+    """Measured (not assumed) loss at 100% severity — the scale `target`
+    loss magnitudes are converted against for this specific mechanism/n."""
+    endpoint = factory(items, severity=1.0, seed=seed)
+    harness = Harness(
+        endpoint, dataset, baseline_language=BASELINE,
+        judge=judge, calibration=calibration,
+    )
+    report = harness.run()
+    cascade = next(c for c in report.cascade_objects if c.language == SYNTH_LANG)
+    loss = next((l for l in cascade.losses if l.stage == expected_stage), None)
+    return loss.points if loss is not None and loss.points is not None else 0.0
+
+
+def _run_sweep_system(
+    mechanism: str, expected_stage: str, factory,
+    items: list[SynthItem], dataset: Dataset, judge, calibration,
+    n: int, target: float, seed: int, max_loss: float,
+) -> SweepOutcome:
+    severity, n_affected = _severity_for_target(target, max_loss, n)
+    endpoint = factory(items, severity=severity, seed=seed)
+    harness = Harness(
+        endpoint, dataset, baseline_language=BASELINE,
+        judge=judge, calibration=calibration,
+    )
+    report = harness.run(system_label=f"sweep-{mechanism}-n{n}-target{target}")
+    cascade = next(c for c in report.cascade_objects if c.language == SYNTH_LANG)
+    dominant = cascade.dominant
+    expected_loss = next((l for l in cascade.losses if l.stage == expected_stage), None)
+    return SweepOutcome(
+        n=n, mechanism=mechanism, expected_stage=expected_stage, target_loss=target,
+        achieved_loss=expected_loss.points if expected_loss else None,
+        n_affected=n_affected, severity=severity, seed=seed,
+        dominant_stage=dominant.stage if dominant else None,
+        measured=expected_loss is not None and expected_loss.points is not None,
+        noise=expected_loss.is_noise if expected_loss is not None else True,
+    )
+
+
+def _run_sensitivity_sweep() -> list[SweepOutcome]:
+    """Builds and runs every (n, mechanism, target loss) combination.
+    Seeds are a fixed function of (n index, mechanism index, target index)
+    — deterministic and reproducible, same guarantee as the 20-system
+    suite above, just over a larger grid.
+    """
+    outcomes: list[SweepOutcome] = []
+    for n_idx, n in enumerate(SWEEP_SAMPLE_SIZES):
+        items = _build_items(n)
+        dataset = _build_dataset(items)
+        judge = StubJudge()
+        # A fresh, honest calibration per sample size — reusing the fixed
+        # 10-item calibration against a 100-item sweep would be exactly
+        # the kind of unverified reuse this suite exists to avoid.
+        calibration = _calibrate_s2_judge(items, dataset)
+
+        for mech_idx, (mechanism, expected_stage, factory) in enumerate(_MECHANISMS):
+            base_seed = 5000 + n_idx * 1000 + mech_idx * 100
+            max_loss = _sweep_max_loss(
+                factory, items, dataset, judge, calibration, expected_stage,
+                seed=base_seed,
+            )
+            for target_idx, target in enumerate(TARGET_LOSSES):
+                outcomes.append(_run_sweep_system(
+                    mechanism, expected_stage, factory, items, dataset,
+                    judge, calibration, n, target,
+                    seed=base_seed + 10 + target_idx, max_loss=max_loss,
+                ))
+    return outcomes
+
+
+def test_sensitivity_sweep_across_sample_sizes() -> None:
+    outcomes = _run_sensitivity_sweep()
+    assert len(outcomes) == len(SWEEP_SAMPLE_SIZES) * len(_MECHANISMS) * len(TARGET_LOSSES)
+
+    by_cell: dict[tuple[int, float], list[SweepOutcome]] = defaultdict(list)
+    for o in outcomes:
+        by_cell[(o.n, o.target_loss)].append(o)
+
+    print("\nSensitivity sweep — accuracy / noise-rate / not-measured-rate by (n, target loss):")
+    smallest_reliable: dict[int, float | None] = {}
+    for n in SWEEP_SAMPLE_SIZES:
+        print(f"\n  n={n}:")
+        for target in TARGET_LOSSES:
+            cell = by_cell[(n, target)]
+            n_cell = len(cell)
+            n_correct = sum(o.correct for o in cell)
+            n_noise = sum(o.noise for o in cell)
+            n_not_measured = sum(not o.measured for o in cell)
+            accuracy = n_correct / n_cell
+            achieved = [o.achieved_loss for o in cell if o.achieved_loss is not None]
+            achieved_repr = f"{min(achieved):.1f}-{max(achieved):.1f}" if achieved else "n/a"
+            print(
+                f"    target~{target:>5.1f}  achieved~{achieved_repr:<11}  "
+                f"accuracy={n_correct}/{n_cell} ({accuracy:.0%})  "
+                f"noise={n_noise}/{n_cell}  not_measured={n_not_measured}/{n_cell}"
+            )
+            if accuracy >= RELIABLE_THRESHOLD and n not in smallest_reliable:
+                smallest_reliable[n] = target
+        smallest_reliable.setdefault(n, None)
+
+    print("\nSmallest reliably-attributed target loss magnitude, by sample size:")
+    for n in SWEEP_SAMPLE_SIZES:
+        val = smallest_reliable[n]
+        print(f"  n={n}: {val if val is not None else 'none of the tested magnitudes (' + str(TARGET_LOSSES) + ')'}")
+
+    confusion: Counter[tuple[str, str]] = Counter(
+        (o.mechanism, o.dominant_stage or "not_measured_or_noise") for o in outcomes
+    )
+    print("\nConfusion matrix, all (n, target) cells combined (injected mechanism -> reported stage):")
+    for (mechanism, reported), n in sorted(confusion.items()):
+        print(f"  {mechanism} -> {reported}: {n}")
+
+    print(
+        "\nThese are controlled synthetic defects on a synthetic dataset — a "
+        "sensitivity floor for stratum's attribution method itself, not a "
+        "guarantee about any particular real-world system's defects."
+    )
+
+    # Never count "noise" or "not measured" as correct, at any cell.
+    for o in outcomes:
+        if o.correct:
+            assert o.measured
+            assert not o.noise
+
+    # The largest tested magnitude (20 points) should be reliably
+    # attributed at every sample size — a floor a real attribution
+    # regression should break loudly, not a claim about smaller magnitudes.
+    for n in SWEEP_SAMPLE_SIZES:
+        cell = by_cell[(n, TARGET_LOSSES[-1])]
+        accuracy = sum(o.correct for o in cell) / len(cell)
+        assert accuracy >= RELIABLE_THRESHOLD, (
+            f"n={n}, target={TARGET_LOSSES[-1]}: only {accuracy:.0%} correct"
+        )
