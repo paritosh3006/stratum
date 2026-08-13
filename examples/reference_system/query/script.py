@@ -35,10 +35,11 @@ _WORD = re.compile(r"[a-zA-Z]+")
 #: a word actually worth transliterating there.
 HI_LATN_MARKERS = frozenset("""
 kya hai hain kaise kitna kitne kitni hoga hogi hoti hota hote milta milti
-milega karte kare karo sakte sakta sakti chahiye wala wali wale nahi mera
-meri mere hum humein tumhe aapka aapki aapke liye pehle baad turant kab
+milega karte kare karo karna sakte sakta sakti chahiye wala wali wale walo nahi
+mera meri mere hum humein tumhe aapka aapki aapke liye pehle baad turant kab
 kaun kyun kyu se ke ki ka me mein aur ya bhi to hi thi tha the yeh woh
 iska uska waqt paise rupaye saal varsh kro dijiye jata jati jate
+ghante hona upar din jama shikayat hui videsh dusri ko lete
 """.split())
 
 

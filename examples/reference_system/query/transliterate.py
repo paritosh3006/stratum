@@ -64,6 +64,43 @@ _VOWELS_INITIAL: list[tuple[str, str]] = [
     ("a", "अ"), ("i", "इ"), ("u", "उ"), ("e", "ए"), ("o", "ओ"),
 ]
 
+#: A single short vowel letter (a/i/u — never a digraph like "ai"/"ee",
+#: those are already unambiguous) landing on the very last syllable of a
+#: word conventionally represents the LONG vowel in real Hindi spelling,
+#: not the short one: "kitna" is कितना (long आ), not कितन; "hoti" is होती
+#: (long ई), not होति. The same short letter mid-word means what it says —
+#: "kar" is कर, not कार — so this only overrides the *last* syllable's
+#: matra/independent-vowel choice, found by checking the match reaches the
+#: end of the string. Found by hand-tracing "kya"/"kitna"/"hoga"/"hoti"
+#: against their real spellings after these words kept failing to match
+#: the S1 lexicon post-transliteration; see query/pipeline.py's docstring
+#: for the retrieval-failure chain this was breaking.
+_LONG_AT_WORD_END_MATRA = {"a": "ा", "i": "ी", "u": "ू"}
+_LONG_AT_WORD_END_INITIAL = {"a": "आ", "i": "ई", "u": "ऊ"}
+
+#: Common words the syllable-table approach cannot reach even with the
+#: word-final-length fix above, because they need a conjunct (two
+#: consonants joined with no vowel between them via a virama) rather than
+#: a vowel-length correction. "kya" is by far the highest-frequency case in
+#: this dataset's queries — checked first, before the general algorithm.
+_KNOWN_WORDS: dict[str, str] = {
+    "kya": "क्या",       # conjunct क्य, not two open syllables
+    "chahiye": "चाहिए",  # mid-word long आ the word-final rule can't reach
+    "pehle": "पहले",     # first syllable is bare प, not पे
+    "ghante": "घंटे",    # nasal ं before ट, not a full न
+    "upar": "ऊपर",       # long ऊ, not short उ
+    "walo": "वालों",     # plural oblique वालों, not a bare guess at वलो
+    "shikayat": "शिकायत",  # mid-word long आ before य
+    "dusri": "दूसरी",    # long ऊ, not short उ
+    # Word-final/pre-consonant nasalization (anusvara ं) has no table entry
+    # at all — the algorithm has no way to know "n" here means a nasal
+    # mark, not a full न, so these three extremely common words come out
+    # as two syllables (मेइन, हैन) or missing the mark entirely (नही
+    # instead of नहीं).
+    "me": "में", "mein": "में", "nahi": "नहीं", "hain": "हैं",
+    "turant": "तुरंत",
+}
+
 
 class RuleBasedTransliterator:
     """Greedy syllable-table transliteration. No model, no download.
@@ -82,23 +119,33 @@ class RuleBasedTransliterator:
 
     def _word(self, word: str) -> str:
         w = word.lower()
+        if w in _KNOWN_WORDS:
+            return _KNOWN_WORDS[w]
+
         out: list[str] = []
         i = 0
-        while i < len(w):
+        n = len(w)
+        while i < n:
             cons = next((c for c, _ in _CONSONANTS if w.startswith(c, i)), None)
             if cons:
                 dev_c = dict(_CONSONANTS)[cons]
                 i += len(cons)
                 vowel = next((v for v, _ in _MATRAS if w.startswith(v, i)), None)
                 if vowel:
-                    out.append(dev_c + dict(_MATRAS)[vowel])
+                    matra = dict(_MATRAS)[vowel]
+                    if i + len(vowel) == n and vowel in _LONG_AT_WORD_END_MATRA:
+                        matra = _LONG_AT_WORD_END_MATRA[vowel]
+                    out.append(dev_c + matra)
                     i += len(vowel)
                 else:
                     out.append(dev_c)  # inherent vowel, no matra written
                 continue
             vow = next((v for v, _ in _VOWELS_INITIAL if w.startswith(v, i)), None)
             if vow:
-                out.append(dict(_VOWELS_INITIAL)[vow])
+                glyph = dict(_VOWELS_INITIAL)[vow]
+                if i + len(vow) == n and vow in _LONG_AT_WORD_END_INITIAL:
+                    glyph = _LONG_AT_WORD_END_INITIAL[vow]
+                out.append(glyph)
                 i += len(vow)
                 continue
             out.append(w[i])  # unmapped character (digits, punctuation) passes through

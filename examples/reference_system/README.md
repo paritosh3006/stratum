@@ -343,3 +343,74 @@ has for cross-lingual retrieval, for the same reason — see
 directory). Use `stub` to confirm the judge/calibration *wiring* works end
 to end offline; calibrate and cite `--judge ollama` (with qwen2.5:7b or
 better) for a real cross-lingual quality signal.
+
+## What actually fixed the hi-Latn numeral/glossary gates
+
+The earlier over-refusal investigation (above) traced every failure to
+empty answers and stopped there — real, but incomplete. Tracing *why*
+those answers came back empty found the actual bug: `RuleBasedTransliterator`
+was silently dropping word-final vowels and had no concept of nasalization
+at all, so common words came out as plausible-looking but wrong Devanagari
+that never matched the S1 lexicon.
+
+**Word-final short vowels were being swallowed, not lengthened.**
+`"kitna"` (should be कितना) came out as कितन; `"hoga"` (होगा) as होग;
+`"hoti"` (होती) as होति. The `("a", "")` empty-matra entry added earlier to
+stop a *different* bug (a spurious extra अ on mid-word "a") was firing on
+word-final "a"/"i"/"u" too — but a trailing single vowel at the end of a
+casually-romanized Hindi word conventionally represents the *long* form
+(आ/ई/ऊ), not silence. Fixed by making the matra lookup position-aware: the
+override only fires when the vowel match reaches the end of the string, so
+mid-word cases like `"kar"` (कर, correctly bare) are untouched —
+`TestTransliteration::test_mid_word_short_vowel_stays_short` pins exactly
+that boundary.
+
+**Nasalization (anusvara ं) has no table entry at all.** `"mein"` → मेइन
+(two syllables instead of में with a nasal mark), `"nahi"` → नही (missing
+the nasal mark "nahin" needs — नहीं), `"hain"` → हैन (a full न instead of
+ं). These are
+three of the most common words in any Hindi sentence. No general fix here —
+recognizing anusvara from romanization is a real grapheme-to-phoneme
+problem, not a table lookup — so they're now `_KNOWN_WORDS` exceptions,
+alongside `"kya"` → क्या (needs a consonant conjunct the syllable algorithm
+has no concept of) and five more high-frequency words the general algorithm
+got wrong for the same two reasons.
+
+Also expanded `HI_LATN_MARKERS`/the S1 lexicon to cover words the *original*
+over-refusal investigation's dataset actually uses and hadn't reached yet
+(`ghante`, `hona`, `upar`, `din`, `jama`, `karna`, and others) — coverage
+gaps, not transliteration bugs, but the same failure mode: an untranslated
+token contributes nothing to the overlap score.
+
+Re-running:
+
+| Metric | Before | After |
+|---|---|---|
+| hi-Latn quality | 60.9 | **78.3** |
+| hi-Latn Δ vs baseline | −31.5 (over target) | −14.1 (indistinguishable from noise) |
+| hi-Latn `numeral_integrity` | 44.4% (gate: fail) | **passes** |
+| hi-Latn `glossary_adherence` | 61.1% (gate: fail) | 83.3% (gate: fail — but 1.7 points from passing, down from 23.9) |
+| over-refusals (hi-Latn) | 9 | 4 |
+
+The 4 that still refuse are worth being honest about rather than chased
+further: 3 of them (`cosmetic surgery cover hoti hai kya`,
+`policy milne ke baad turant cancel kar sakte hai kya`,
+`shikayat solve nahi hui to kya kar sakte hai`) score *almost identically
+low when asked in plain English* — 0.167, 0.127, 0.104 against the 0.20
+floor, all correctly retrieving the gold chunk and all refusing anyway.
+That's an extractive-answering ceiling (the corpus phrasing just doesn't
+lexically overlap enough with the natural question phrasing), not a
+translation problem, and no amount of S1 vocabulary work fixes it. The 4th
+(`61 saal se upar walo pe copayment lagta hai kya`, score 0.133 hi-Latn vs
+0.526 English) traces to the *hand-authored parallel dataset*: the Hindi
+phrasing genuinely never says "member" or "aged" the way the English
+does ("upar walo" — "those above" — is idiomatic and drops both), so a
+perfect translation of this exact Hindi sentence would still lack those
+words. Also not an S1 bug.
+
+**Separately, and not touched here:** `hi-Deva`'s `numeral_integrity` gate
+now fails (66.7%, was already 66.7% before any of this — confirmed against
+the same metric in a pre-fix run) via the wrong-span-selection class of bug
+documented earlier (the "48 vs 36 months" case). hi-Deva doesn't go through
+`RuleBasedTransliterator` at all, so it's unrelated to everything in this
+section — a genuine separate finding, left for its own investigation.

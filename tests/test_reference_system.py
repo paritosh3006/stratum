@@ -148,6 +148,38 @@ class TestTransliteration:
         # out not to be digit corruption but is worth locking in either way.
         assert RuleBasedTransliterator().transliterate("45 saal 500000") == "45 साल 500000"
 
+    def test_word_final_short_vowel_becomes_long(self):
+        # "kitna" is कितना (long आ), not कितन — the general algorithm was
+        # silently dropping a word-final vowel entirely rather than
+        # recognising that a trailing single a/i/u in casual romanization
+        # conventionally represents the long form. This was the root cause
+        # of most of the hi-Latn over-refusals traced in README.md's
+        # numeral/glossary gate investigation: the mangled spelling never
+        # matched the S1 lexicon, so the word translated to nothing.
+        t = RuleBasedTransliterator()
+        assert t.transliterate("kitna") == "कितना"
+        assert t.transliterate("hoga") == "होगा"
+        assert t.transliterate("hoti") == "होती"
+
+    def test_mid_word_short_vowel_stays_short(self):
+        # The word-final override must not fire mid-word — "kar" is कर
+        # (bare, inherent vowel), not कार (long आ would change the word).
+        t = RuleBasedTransliterator()
+        assert t.transliterate("kar") == "कर"
+        assert t.transliterate("milta") == "मिलता"
+
+    def test_known_word_exceptions_override_the_general_algorithm(self):
+        # "kya" needs a conjunct (क्या) the syllable-table approach can't
+        # reach without real morphology; nasalization ("mein", "nahi",
+        # "hain", "turant") isn't in any table at all. Both were silently
+        # producing plausible-looking but wrong Devanagari that never
+        # matched the S1 lexicon.
+        t = RuleBasedTransliterator()
+        assert t.transliterate("kya") == "क्या"
+        assert t.transliterate("mein") == "में"
+        assert t.transliterate("nahi") == "नहीं"
+        assert t.transliterate("hain") == "हैं"
+
 
 class TestTranslation:
     def test_known_words_translate(self):
@@ -386,6 +418,22 @@ class TestRenderIntegration:
         assert "{claim_id}" in r.answer
         assert "{status}" in r.answer
         assert "{amount}" in r.answer
+
+    def test_hi_latn_previously_over_refusing_queries_now_answer(self, system):
+        # These queries retrieved the correct chunk all along — they refused
+        # at span-selection because the normalized query text was too
+        # mangled by the transliteration bugs above to clear the relevance
+        # floor. Regression guard for that specific chain, not just the
+        # transliterator in isolation.
+        queries = [
+            "claim ke liye minimum hospitalisation kitne ghante ka hona chahiye",
+            "admission se pehle cashless approval kaise lete hai",
+            "videsh me treatment cover hota hai kya",
+            "policy ko dusri company me port kaise kare",
+        ]
+        for q in queries:
+            r = system.answer(q, "hi-Latn")
+            assert not r.refused, f"still refusing: {q!r}"
 
 
 class TestOracleHooks:
