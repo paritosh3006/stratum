@@ -9,7 +9,7 @@
 
 ## The problem
 
-You built a RAG system. It works well in English. Then you added Hindi, Tamil, Indonesian, Swahili.
+Built a RAG system. It works well in English. Then you added Hindi, Tamil, Indonesian, Swahili.
 
 Does it still work?
 
