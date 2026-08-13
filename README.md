@@ -2,6 +2,7 @@
 
 **Find out where your multilingual RAG system breaks — and which stage is causing it.**
 
+[![CI](https://github.com/paritosh3006/stratum/actions/workflows/ci.yml/badge.svg)](https://github.com/paritosh3006/stratum/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/badge/pypi-v0.1.0-blue)](https://pypi.org)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
