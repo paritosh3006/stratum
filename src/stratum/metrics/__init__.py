@@ -1,1 +1,1 @@
-from . import s2_retrieval, s4_rendering  # noqa: F401
+from . import language, s2_retrieval, s4_rendering  # noqa: F401

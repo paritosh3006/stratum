@@ -46,6 +46,21 @@ class EvalItem(BaseModel):
     # True when the correct behaviour is to refuse.
     answerable: bool = True
 
+    #: The language the user actually wrote the query in. Optional and
+    #: independent of `language`, which stays the item's primary key for
+    #: everything else (dataset grouping, S0 script_misdetection, oracle
+    #: pairing). This is for use cases where query and answer language can
+    #: legitimately differ — cross-lingual chat, voice — and defaults to
+    #: unset so a dataset that predates it is untouched.
+    query_language: str | None = None
+
+    #: The language the *answer* is expected to come back in. Falls back to
+    #: `query_language` via `effective_expected_answer_language` when unset,
+    #: since same-language is the common case. When neither field is set,
+    #: the output-language check simply never fires for this item — no
+    #: dataset migration required.
+    expected_answer_language: str | None = None
+
     #: Template-generated rather than human-authored. Reports built on
     #: synthetic items are scaffolding, not evidence about a real system.
     synthetic: bool = False
@@ -54,6 +69,18 @@ class EvalItem(BaseModel):
     def lang(self) -> str:
         """Language without the script subtag."""
         return self.language.split("-")[0]
+
+    @property
+    def effective_expected_answer_language(self) -> str | None:
+        """`expected_answer_language`, defaulting to `query_language`.
+
+        None when neither is set. Callers must treat None as "no
+        expectation declared" rather than falling back to `language` —
+        that field means something different (the item's own language
+        variant) and conflating the two would make the check fire on every
+        existing dataset the day this field shipped.
+        """
+        return self.expected_answer_language or self.query_language
 
 
 class Dataset(BaseModel):

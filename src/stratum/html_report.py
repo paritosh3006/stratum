@@ -638,6 +638,9 @@ METRIC_LABEL = {
     "answer_correctness": "Answer correctness", "placeholder_integrity": "Placeholder integrity",
     "numeral_integrity": "Numeral integrity", "entity_preservation": "Entity preservation",
     "glossary_adherence": "Glossary adherence",
+    # Not in METRIC_STAGE: its stage is `Harness.output_language_stage`, set
+    # per run rather than fixed per metric, so it groups under "Other" here.
+    "output_language": "Output language",
 }
 
 

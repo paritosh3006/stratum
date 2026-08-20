@@ -9,6 +9,8 @@ from .attribution import Cascade, build_cascade
 from .dataset import Dataset, EvalItem
 from .endpoint import Endpoint, RagResponse
 from .judges import CalibrationRegistry, JudgeBackend
+from .language import LanguageDetector, ScriptRangeDetector
+from .metrics import language as lang_metrics
 from .metrics import s2_retrieval as s2
 from .metrics import s4_rendering as s4
 from .report import Failure, LanguageResult, Report
@@ -45,6 +47,7 @@ OUTCOME_WEIGHTS: dict[str, float] = {
 #: Diagnostics reported per language but excluded from the outcome score.
 DIAGNOSTIC_METRICS = (
     "recall_at_k", "mrr", "ndcg_at_k", "language_detection", "over_refusal",
+    "output_language",
 )
 
 #: Stages whose loss cannot be measured by deterministic checks alone.
@@ -78,6 +81,8 @@ class Harness:
         judge: JudgeBackend | None = None,
         calibration: CalibrationRegistry | None = None,
         verified_languages: list[str] | None = None,
+        language_detector: LanguageDetector | None = None,
+        output_language_stage: str = "s4",
     ) -> None:
         self.endpoint = endpoint
         self.dataset = dataset
@@ -87,6 +92,20 @@ class Harness:
         self.judge = judge
         self.calibration = calibration or CalibrationRegistry()
         self.verified_languages = verified_languages
+        # ScriptRangeDetector never asserts a `pass` (see its docstring), so
+        # defaulting to it here cannot manufacture a failure on its own —
+        # it only ever fires at all for items that declare
+        # `effective_expected_answer_language`, which no pre-existing
+        # dataset does. Swap in IndicLIDLanguageDetector (or another real
+        # backend) to actually resolve script-confusable languages.
+        self.language_detector = language_detector or ScriptRangeDetector()
+        # Which stage a `wrong_output_language` failure is attributed to.
+        # Not inferred from the endpoint or the item: a RAG system's output
+        # language is usually an S4 rendering bug, but a voice pipeline's
+        # is usually an S0 ALD bug at the door, and core has no way — and
+        # no business — knowing which kind of system produced the answer.
+        # The caller states it; core just uses whatever string is given.
+        self.output_language_stage = output_language_stage
 
     # ------------------------------------------------------------------
     def _judge_permits(self, language: str, metric: str) -> bool:
@@ -289,6 +308,24 @@ class Harness:
                     f"detected {resp.detected_language}, expected {item.language}",
                     resp.answer))
 
+        # -- output-language expectation -----------------------------------
+        # Distinct from the S0 check above: that one asks whether the
+        # endpoint recognised the *query's* language. This asks whether the
+        # *answer* came back in the language the item expects — which, per
+        # `EvalItem.effective_expected_answer_language`, may deliberately
+        # differ from the query's own language (cross-lingual use cases).
+        expected_lang = item.effective_expected_answer_language
+        if expected_lang is not None and resp.answer:
+            guess = self.language_detector.detect(resp.answer)
+            lang_check = lang_metrics.check_output_language(guess, expected_lang)
+            if lang_check.is_measured:
+                res.scores["output_language"] = 1.0 if lang_check.outcome == "pass" else 0.0
+            if lang_check.outcome == "fail" and pass_name == "standard":
+                res.failures.append(self._fail(
+                    item, "wrong_output_language", self.output_language_stage,
+                    f"detected {lang_check.detected}, expected {lang_check.expected}",
+                    resp.answer))
+
         # -- S3 refusal behaviour -----------------------------------------
         if item.answerable:
             over = resp.refused
@@ -387,7 +424,7 @@ class Harness:
                 "recall_at_k", "language_detection", "over_refusal",
                 "placeholder_integrity", "numeral_integrity",
                 "entity_preservation", "glossary_adherence", "answered_correctly",
-                "faithfulness", "answer_correctness",
+                "faithfulness", "answer_correctness", "output_language",
             )
         }
         metrics["mrr"] = est("mrr", scale=1.0).as_dict()
